@@ -1,0 +1,19 @@
+[project]
+name = "mensa-bot"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "python-telegram-bot>=20,<21",
+    "anthropic>=0.40",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
