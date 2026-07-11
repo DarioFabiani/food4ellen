@@ -100,3 +100,37 @@ def handle_feedback_answer(profile: dict, feedback_testo: str) -> tuple[dict, li
     profile = copy.deepcopy(profile)
     profile["in_attesa_di_feedback_per"] = None
     return profile, ["Grazie, ho aggiornato le tue preferenze!"]
+
+
+def handle_preferenze_command(profile: dict) -> tuple[dict, list[str]]:
+    righe = ["Allergie/intolleranze: " + (", ".join(profile["allergie_intolleranze"]) or "nessuna")]
+    if profile["preferenze"]:
+        righe.append("Preferenze:")
+        for p in profile["preferenze"]:
+            nota = f" ({p['note']})" if p.get("note") else ""
+            righe.append(f"- {p['item']}: {p['sentiment']}, peso {p['peso']}{nota}")
+    else:
+        righe.append("Nessuna preferenza registrata ancora.")
+    return profile, ["\n".join(righe)]
+
+
+def handle_reset_command(profile: dict) -> tuple[dict, list[str]]:
+    profile = copy.deepcopy(profile)
+    profile["in_attesa_di_conferma_reset"] = True
+    return profile, [
+        "Sei sicura di voler azzerare tutto il profilo? Rispondi CONFERMA per "
+        "procedere, qualsiasi altra cosa per annullare."
+    ]
+
+
+def handle_reset_confirmation(profile: dict, risposta_utente: str) -> tuple[dict, list[str]]:
+    import storage
+
+    if risposta_utente.strip().upper() != "CONFERMA":
+        profile = copy.deepcopy(profile)
+        profile["in_attesa_di_conferma_reset"] = False
+        return profile, ["Reset annullato."]
+
+    nuovo_profilo = copy.deepcopy(storage.DEFAULT_PROFILE)
+    nuovo_profilo["chat_id"] = profile.get("chat_id")
+    return nuovo_profilo, ["Profilo azzerato. Ricominciamo dall'onboarding!", messaggio_domanda_onboarding(1)]
