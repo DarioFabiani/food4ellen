@@ -71,3 +71,32 @@ def handle_menu(profile: dict, opzioni_menu: list[str]) -> tuple[dict, list[str]
         profile = profile_ops.archivia_pasto_piu_vecchio(profile, nuovo_riassunto)
 
     return profile, [raccomandazione["messaggio"]]
+
+
+def handle_feedback_command(profile: dict) -> tuple[dict, list[str]]:
+    pasto = profile_ops.find_pasto_in_attesa_di_feedback(profile)
+    if pasto is None:
+        return profile, ["Non ho pasti in attesa di feedback al momento."]
+    profile = copy.deepcopy(profile)
+    profile["in_attesa_di_feedback_per"] = pasto["id"]
+    return profile, [f"Com'è andata con '{pasto['scelta_consigliata']}'?"]
+
+
+def handle_feedback_answer(profile: dict, feedback_testo: str) -> tuple[dict, list[str]]:
+    pasto_id = profile.get("in_attesa_di_feedback_per")
+    pasto = next((p for p in profile["pasti_recenti"] if p["id"] == pasto_id), None)
+    if pasto is None:
+        return profile, ["Non so a quale pasto si riferisce, usa prima /feedback."]
+
+    estratto = claude_client.parse_feedback(pasto, profile["preferenze"], feedback_testo)
+    profile = profile_ops.apply_feedback(
+        profile,
+        pasto_id,
+        estratto["gradimento"],
+        estratto.get("scelta_reale"),
+        feedback_testo,
+        estratto.get("nuove_preferenze", []),
+    )
+    profile = copy.deepcopy(profile)
+    profile["in_attesa_di_feedback_per"] = None
+    return profile, ["Grazie, ho aggiornato le tue preferenze!"]
