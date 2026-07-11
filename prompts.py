@@ -176,3 +176,117 @@ RIASSUNTO STORICO (pattern a lungo termine):
 {riassunto_storico or "nessuno"}
 
 Scegli l'opzione migliore secondo le regole del system prompt e rispondi in JSON."""
+
+
+# ---------------------------------------------------------------------------
+# 3. VISION: estrazione delle opzioni menu da una foto
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT_MENU_VISION = """\
+Ricevi la foto di un menu di mensa. Estrai SOLO le opzioni di cibo effettivamente \
+disponibili (piatti, non intestazioni di sezione come "primi" o "secondi").
+
+Rispondi SOLO con un oggetto JSON valido, nessun testo prima o dopo, nessun \
+blocco ```, in questa forma:
+{"opzioni_menu": ["string", ...]}
+
+Trascrivi ogni opzione così come scritta nel menu (correggi solo refusi OCR \
+evidenti). Se il testo è illeggibile o non è un menu, restituisci una lista \
+vuota.
+"""
+
+
+def build_menu_vision_user_text() -> str:
+    return (
+        "Estrai le opzioni del menu da questa foto e rispondi in JSON "
+        "secondo le regole del system prompt."
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. FEEDBACK: interpretazione del feedback libero su un pasto
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT_FEEDBACK_PARSING = """\
+Interpreti il feedback libero che l'utente dà su un pasto già consigliato, per \
+aggiornarne lo stato e il profilo gusti. Rispondi SOLO con un oggetto JSON \
+valido (nessun testo prima o dopo, nessun blocco ```), in questa forma:
+
+{
+  "gradimento": "positivo" | "negativo" | "neutro",
+  "scelta_reale": "string oppure null: valorizza SOLO se il feedback indica che l'utente ha scelto qualcosa di diverso dal consiglio",
+  "nuove_preferenze": [
+    {
+      "item": "nome breve e normalizzato",
+      "sentiment": "like" | "dislike" | "neutro",
+      "peso": intero 1-5,
+      "fonte": "inferito",
+      "note": "string oppure null"
+    }
+  ]
+}
+
+Regole:
+- "nuove_preferenze" deve contenere SOLO le voci nuove o da aggiornare (nuovi \
+item emersi dal feedback, o rinforzo/indebolimento di un item già noto). Se il \
+feedback non implica nessun aggiornamento di preferenze, restituisci una lista \
+vuota.
+- Se il feedback è ambiguo sul gradimento generale, deducilo dal tono \
+complessivo (es. "buono ma un po' salato" -> "positivo" con una nuova \
+preferenza dislike leggera su "sale/sapidità").
+- Non contraddire allergie/intolleranze già note: se il feedback sembra \
+contraddirle, ignora quella parte e non generare una preferenza in conflitto.
+"""
+
+
+def build_feedback_user_prompt(pasto: dict, preferenze_attuali: list[dict], feedback_testo: str) -> str:
+    preferenze_fmt = (
+        "\n".join(f"- {p['item']}: {p['sentiment']} (peso {p['peso']})" for p in preferenze_attuali)
+        or "nessuna preferenza registrata"
+    )
+    return f"""\
+PASTO A CUI SI RIFERISCE IL FEEDBACK:
+- data: {pasto['data']}
+- consigliato: {pasto['scelta_consigliata']}
+- opzioni presentate quel giorno: {", ".join(pasto['opzioni_presentate'])}
+
+PREFERENZE ATTUALI:
+{preferenze_fmt}
+
+FEEDBACK DELL'UTENTE:
+{feedback_testo!r}
+
+Interpreta il feedback e rispondi in JSON secondo le regole del system prompt."""
+
+
+# ---------------------------------------------------------------------------
+# 5. RIASSUNTO STORICO: compressione dei pasti più vecchi
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT_SUMMARY_COMPRESSION = """\
+Mantieni un riassunto testuale breve (max 5-6 righe) dei pattern a lungo \
+termine nei gusti alimentari di una persona, usato come memoria compressa dei \
+pasti più vecchi degli ultimi 20. Ricevi il riassunto attuale e UN pasto da \
+archiviare (che sta per uscire dallo storico dettagliato) e produci un \
+riassunto aggiornato che integra eventuali pattern rilevanti da quel pasto.
+
+Rispondi SOLO con il testo del riassunto aggiornato, nessun JSON, nessun \
+titolo, nessun testo introduttivo. Se il pasto da archiviare non aggiunge \
+nulla di rilevante rispetto al riassunto attuale, restituisci il riassunto \
+invariato.
+"""
+
+
+def build_summary_update_prompt(riassunto_attuale: str, pasto_da_archiviare: dict) -> str:
+    return f"""\
+RIASSUNTO ATTUALE:
+{riassunto_attuale or "(vuoto, nessun pattern ancora registrato)"}
+
+PASTO DA ARCHIVIARE:
+- data: {pasto_da_archiviare['data']}
+- consigliato: {pasto_da_archiviare['scelta_consigliata']}
+- scelta reale: {pasto_da_archiviare.get('scelta_reale') or "(uguale al consiglio)"}
+- gradimento: {pasto_da_archiviare.get('gradimento') or "non valutato"}
+- feedback: {pasto_da_archiviare.get('feedback') or "nessuno"}
+
+Produci il riassunto aggiornato secondo le regole del system prompt."""
