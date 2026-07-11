@@ -134,3 +134,28 @@ def handle_reset_confirmation(profile: dict, risposta_utente: str) -> tuple[dict
     nuovo_profilo = copy.deepcopy(storage.DEFAULT_PROFILE)
     nuovo_profilo["chat_id"] = profile.get("chat_id")
     return nuovo_profilo, ["Profilo azzerato. Ricominciamo dall'onboarding!", messaggio_domanda_onboarding(1)]
+
+
+def handle_incoming_message(
+    profile: dict, testo: str | None, immagine_bytes: bytes | None
+) -> tuple[dict, list[str]]:
+    if not profile["onboarding_completato"]:
+        if testo is None:
+            return profile, ["Durante le domande iniziali rispondimi a parole, non con una foto :)"]
+        return handle_onboarding_answer(profile, testo)
+
+    if profile.get("in_attesa_di_conferma_reset"):
+        if testo is None:
+            return profile, ["Rispondi CONFERMA o scrivimi qualcos'altro per annullare il reset."]
+        return handle_reset_confirmation(profile, testo)
+
+    if profile.get("in_attesa_di_feedback_per"):
+        if testo is None:
+            return profile, ["Aspetto un feedback testuale sull'ultimo pasto, non una foto."]
+        return handle_feedback_answer(profile, testo)
+
+    if immagine_bytes is not None:
+        opzioni_menu = claude_client.extract_menu_from_image(immagine_bytes)
+    else:
+        opzioni_menu = [riga.strip() for riga in (testo or "").splitlines() if riga.strip()]
+    return handle_menu(profile, opzioni_menu)
