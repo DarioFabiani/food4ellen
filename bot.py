@@ -1,8 +1,10 @@
 """Entry point del bot: wiring di python-telegram-bot e polling."""
 from __future__ import annotations
 
+import functools
 import logging
 import os
+from typing import Awaitable, Callable
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -35,6 +37,25 @@ async def _rispondi(update: Update, profile: dict, messaggi: list[str]) -> None:
         await update.message.reply_text(messaggio)
 
 
+def _con_gestione_errori(
+    handler: Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]],
+) -> Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]:
+    """Avvolge un handler in un try/except: logga e avvisa l'utente in caso di errore."""
+
+    @functools.wraps(handler)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        try:
+            await handler(update, context)
+        except Exception:
+            chat_id = update.effective_chat.id if update.effective_chat else None
+            logger.exception("Errore nell'handler %s (chat_id=%s)", handler.__name__, chat_id)
+            if update.message is not None:
+                await update.message.reply_text("Qualcosa è andato storto, riprova tra un attimo.")
+
+    return wrapper
+
+
+@_con_gestione_errori
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     profile = storage.load_profile()
     if not _chat_consentita(profile, update.effective_chat.id):
@@ -43,6 +64,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _rispondi(update, profile, messaggi)
 
 
+@_con_gestione_errori
 async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     profile = storage.load_profile()
     if not _chat_consentita(profile, update.effective_chat.id):
@@ -51,6 +73,7 @@ async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await _rispondi(update, profile, messaggi)
 
 
+@_con_gestione_errori
 async def preferenze_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     profile = storage.load_profile()
     if not _chat_consentita(profile, update.effective_chat.id):
@@ -59,6 +82,7 @@ async def preferenze_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await _rispondi(update, profile, messaggi)
 
 
+@_con_gestione_errori
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     profile = storage.load_profile()
     if not _chat_consentita(profile, update.effective_chat.id):
@@ -67,6 +91,7 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await _rispondi(update, profile, messaggi)
 
 
+@_con_gestione_errori
 async def messaggio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     profile = storage.load_profile()
     if not _chat_consentita(profile, update.effective_chat.id):
