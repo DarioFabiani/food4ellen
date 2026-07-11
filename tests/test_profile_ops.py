@@ -52,6 +52,16 @@ def test_find_pasto_in_attesa_di_feedback_trova_il_primo_senza_feedback():
     assert risultato["id"] == "2"
 
 
+def test_find_pasto_in_attesa_di_feedback_preferisce_il_piu_recente_tra_due_non_valutati():
+    piu_vecchio = {"id": "1", "feedback": None, "gradimento": None}
+    piu_recente = {"id": "2", "feedback": None, "gradimento": None}
+    profilo = _profilo_base(pasti_recenti=[piu_vecchio, piu_recente])
+
+    risultato = profile_ops.find_pasto_in_attesa_di_feedback(profilo)
+
+    assert risultato["id"] == "2"
+
+
 def test_find_pasto_in_attesa_di_feedback_restituisce_none_se_tutti_valutati():
     valutato = {"id": "1", "feedback": "buono", "gradimento": "positivo"}
     profilo = _profilo_base(pasti_recenti=[valutato])

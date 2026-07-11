@@ -34,7 +34,7 @@ def record_new_meal(profile: dict, opzioni_presentate: list[str], scelta_consigl
 
 
 def find_pasto_in_attesa_di_feedback(profile: dict) -> dict | None:
-    for pasto in profile["pasti_recenti"]:
+    for pasto in reversed(profile["pasti_recenti"]):
         if pasto["feedback"] is None:
             return pasto
     return None
