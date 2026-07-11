@@ -50,3 +50,24 @@ def handle_onboarding_answer(profile: dict, risposta_utente: str) -> tuple[dict,
 
     profile["onboarding_step"] = step + 1
     return profile, [messaggio_domanda_onboarding(profile["onboarding_step"])]
+
+
+def handle_menu(profile: dict, opzioni_menu: list[str]) -> tuple[dict, list[str]]:
+    if not opzioni_menu:
+        return profile, ["Non sono riuscito a leggere delle opzioni di menu da questo messaggio, puoi riprovare?"]
+
+    raccomandazione = claude_client.get_recommendation(
+        opzioni_menu,
+        profile["allergie_intolleranze"],
+        profile["preferenze"],
+        profile["pasti_recenti"],
+        profile["riassunto_storico"],
+    )
+    profile = profile_ops.record_new_meal(profile, opzioni_menu, raccomandazione["scelta_consigliata"])
+
+    da_archiviare = profile_ops.pasto_piu_vecchio_da_archiviare(profile)
+    if da_archiviare is not None:
+        nuovo_riassunto = claude_client.update_riassunto_storico(profile["riassunto_storico"], da_archiviare)
+        profile = profile_ops.archivia_pasto_piu_vecchio(profile, nuovo_riassunto)
+
+    return profile, [raccomandazione["messaggio"]]
