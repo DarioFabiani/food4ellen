@@ -29,12 +29,21 @@ def test_handle_preferenze_command_con_dati():
 
 
 def test_handle_reset_command_chiede_conferma():
-    profilo = _profilo_base()
+    profilo = _profilo_base(onboarding_completato=True)
 
     profilo_aggiornato, messaggi = handlers.handle_reset_command(profilo)
 
     assert profilo_aggiornato["in_attesa_di_conferma_reset"] is True
     assert "CONFERMA" in messaggi[0]
+
+
+def test_handle_reset_command_durante_onboarding_chiede_di_completarlo_prima():
+    profilo = _profilo_base(onboarding_completato=False)
+
+    profilo_aggiornato, messaggi = handlers.handle_reset_command(profilo)
+
+    assert profilo_aggiornato["in_attesa_di_conferma_reset"] is False
+    assert "onboarding" in messaggi[0].lower()
 
 
 def test_handle_reset_confirmation_annulla_se_risposta_diversa_da_conferma():

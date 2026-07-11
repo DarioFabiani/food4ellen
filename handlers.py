@@ -74,6 +74,8 @@ def handle_menu(profile: dict, opzioni_menu: list[str]) -> tuple[dict, list[str]
 
 
 def handle_feedback_command(profile: dict) -> tuple[dict, list[str]]:
+    if not profile["onboarding_completato"]:
+        return profile, ["Completa prima l'onboarding, poi potrai usare questo comando."]
     pasto = profile_ops.find_pasto_in_attesa_di_feedback(profile)
     if pasto is None:
         return profile, ["Non ho pasti in attesa di feedback al momento."]
@@ -115,6 +117,8 @@ def handle_preferenze_command(profile: dict) -> tuple[dict, list[str]]:
 
 
 def handle_reset_command(profile: dict) -> tuple[dict, list[str]]:
+    if not profile["onboarding_completato"]:
+        return profile, ["Completa prima l'onboarding, poi potrai usare questo comando."]
     profile = copy.deepcopy(profile)
     profile["in_attesa_di_conferma_reset"] = True
     return profile, [
