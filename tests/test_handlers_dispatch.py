@@ -72,5 +72,40 @@ def test_dispatch_foto_estrae_il_menu_e_lo_passa_a_handle_menu(mock_extract, moc
 
     handlers.handle_incoming_message(profilo, None, b"finti-byte-immagine")
 
-    mock_extract.assert_called_once_with(b"finti-byte-immagine")
+    mock_extract.assert_called_once_with(b"finti-byte-immagine", "image/jpeg")
     mock_handle_menu.assert_called_once_with(profilo, ["pasta al forno", "insalata"])
+
+
+@patch("handlers.handle_menu")
+@patch("handlers.claude_client.extract_menu_from_image")
+def test_dispatch_propaga_il_media_type_a_claude(mock_extract, mock_handle_menu):
+    mock_extract.return_value = ["insalata"]
+    mock_handle_menu.return_value = ({"foo": "bar"}, ["ok"])
+    profilo = _profilo_base(onboarding_completato=True)
+
+    handlers.handle_incoming_message(profilo, None, b"finti-byte-immagine", "image/png")
+
+    mock_extract.assert_called_once_with(b"finti-byte-immagine", "image/png")
+
+
+@patch("handlers.claude_client.extract_menu_from_image")
+def test_dispatch_rifiuta_un_media_type_non_supportato(mock_extract):
+    profilo = _profilo_base(onboarding_completato=True)
+
+    _, messaggi = handlers.handle_incoming_message(
+        profilo, None, b"finti-byte", "image/heic"
+    )
+
+    mock_extract.assert_not_called()
+    assert "foto" in messaggi[0].lower()
+
+
+@patch("handlers.claude_client.extract_menu_from_image")
+def test_dispatch_rifiuta_un_immagine_troppo_grande(mock_extract):
+    profilo = _profilo_base(onboarding_completato=True)
+    immagine = b"x" * (handlers.MAX_IMMAGINE_BYTES + 1)
+
+    _, messaggi = handlers.handle_incoming_message(profilo, None, immagine, "image/jpeg")
+
+    mock_extract.assert_not_called()
+    assert "grande" in messaggi[0].lower()

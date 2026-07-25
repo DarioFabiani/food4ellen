@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 TOTALE_STEP_ONBOARDING = 4
 
+# Formati immagine accettati dall'API Anthropic.
+MEDIA_TYPE_IMMAGINE_SUPPORTATI = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+MAX_IMMAGINE_BYTES = 3_500_000
+
 
 def messaggio_domanda_onboarding(step: int) -> str:
     return ONBOARDING_STEPS[step]["domanda"]
@@ -154,7 +158,10 @@ def handle_reset_confirmation(profile: dict, risposta_utente: str) -> tuple[dict
 
 
 def handle_incoming_message(
-    profile: dict, testo: str | None, immagine_bytes: bytes | None
+    profile: dict,
+    testo: str | None,
+    immagine_bytes: bytes | None,
+    media_type: str | None = None,
 ) -> tuple[dict, list[str]]:
     # Precedenza degli stati (mutuamente esclusivi):
     # onboarding > conferma reset > feedback > menu.
@@ -174,7 +181,17 @@ def handle_incoming_message(
         return handle_feedback_answer(profile, testo)
 
     if immagine_bytes is not None:
-        opzioni_menu = claude_client.extract_menu_from_image(immagine_bytes)
+        if media_type and media_type not in MEDIA_TYPE_IMMAGINE_SUPPORTATI:
+            return profile, [
+                "Non riesco a leggere questo tipo di file. Mandami il menu come foto "
+                "normale (JPEG o PNG) invece che come file."
+            ]
+        if len(immagine_bytes) > MAX_IMMAGINE_BYTES:
+            return profile, [
+                "L'immagine è troppo grande per essere analizzata. Rimandamela come "
+                "foto a qualità normale, non come file originale."
+            ]
+        opzioni_menu = claude_client.extract_menu_from_image(immagine_bytes, media_type or "image/jpeg")
     else:
         opzioni_menu = [riga.strip() for riga in (testo or "").splitlines() if riga.strip()]
     return handle_menu(profile, opzioni_menu)
