@@ -7,7 +7,7 @@ import claude_client
 
 def _fake_response(testo: str):
     fake = MagicMock()
-    fake.content = [MagicMock(text=testo)]
+    fake.content = [MagicMock(type="text", text=testo)]
     return fake
 
 
@@ -56,6 +56,24 @@ def test_call_json_solleva_errore_dopo_troppi_tentativi(mock_get_client):
 
     with pytest.raises(ValueError):
         claude_client._call_json("system", "user")
+
+
+@patch("claude_client._get_client")
+def test_call_json_ignora_blocco_di_thinking_prima_del_testo(mock_get_client):
+    """Regressione: il modello può anteporre un ThinkingBlock al testo;
+    prendere ciecamente content[0] causava un AttributeError in produzione."""
+    mock_client = MagicMock()
+    fake = MagicMock()
+    fake.content = [
+        MagicMock(type="thinking", text=None),
+        MagicMock(type="text", text='{"ok": true}'),
+    ]
+    mock_client.messages.create.return_value = fake
+    mock_get_client.return_value = mock_client
+
+    risultato = claude_client._call_json("system", "user")
+
+    assert risultato == {"ok": True}
 
 
 @patch("claude_client._get_client")

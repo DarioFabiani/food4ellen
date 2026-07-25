@@ -34,6 +34,15 @@ def _strip_code_fences(testo: str) -> str:
     return testo.strip()
 
 
+def _testo_risposta(response) -> str:
+    """Estrae il blocco di testo dalla risposta, scartando eventuali blocchi di
+    thinking che il modello può anteporre al testo vero e proprio."""
+    for blocco in response.content:
+        if blocco.type == "text":
+            return blocco.text
+    raise ValueError("Nessun blocco di testo nella risposta del modello")
+
+
 def _call_json(system: str, content, max_tokens: int = 1024) -> dict:
     messages = [{"role": "user", "content": content}]
     ultimo_errore = None
@@ -44,7 +53,7 @@ def _call_json(system: str, content, max_tokens: int = 1024) -> dict:
             system=system,
             messages=messages,
         )
-        testo = response.content[0].text
+        testo = _testo_risposta(response)
         try:
             return json.loads(_strip_code_fences(testo))
         except json.JSONDecodeError as exc:
@@ -112,4 +121,4 @@ def update_riassunto_storico(riassunto_attuale: str, pasto_da_archiviare: dict) 
         system=prompts.SYSTEM_PROMPT_SUMMARY_COMPRESSION,
         messages=[{"role": "user", "content": user_prompt}],
     )
-    return response.content[0].text.strip()
+    return _testo_risposta(response).strip()
