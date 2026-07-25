@@ -4,9 +4,82 @@ Contiene le due funzioni "principali" del bot:
 - parsing delle risposte di onboarding in dati strutturati
 - raccomandazione del pasto del giorno
 
-Entrambe restituiscono SOLO JSON (nessun testo extra), per un parsing
-affidabile lato codice. Vedi claude_client.py per come vengono invocate.
+La forma delle risposte è garantita dagli structured outputs dell'API
+(gli SCHEMA_* qui sotto), quindi i system prompt descrivono solo il
+CONTENUTO atteso. Vedi claude_client.py per come vengono invocate.
 """
+
+# ---------------------------------------------------------------------------
+# 0. SCHEMI JSON per gli structured outputs
+#
+# Vincoli dell'API: ogni oggetto deve avere additionalProperties: False e
+# elencare in "required" tutte le sue proprietà; non sono supportate le
+# keyword minimum/maximum/multipleOf/minLength/maxLength (per un intero in
+# un intervallo si usa "enum").
+# ---------------------------------------------------------------------------
+
+_SCHEMA_PREFERENZA = {
+    "type": "object",
+    "properties": {
+        "item": {"type": "string"},
+        "sentiment": {"type": "string", "enum": ["like", "dislike", "neutro"]},
+        "peso": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
+        "fonte": {"type": "string", "enum": ["dichiarato", "inferito"]},
+        "note": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    },
+    "required": ["item", "sentiment", "peso", "fonte", "note"],
+    "additionalProperties": False,
+}
+
+SCHEMA_ONBOARDING_ALLERGIE = {
+    "type": "object",
+    "properties": {
+        "allergie_intolleranze": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["allergie_intolleranze"],
+    "additionalProperties": False,
+}
+
+SCHEMA_ONBOARDING_PREFERENZE = {
+    "type": "object",
+    "properties": {
+        "preferenze": {"type": "array", "items": _SCHEMA_PREFERENZA},
+    },
+    "required": ["preferenze"],
+    "additionalProperties": False,
+}
+
+SCHEMA_MENU_VISION = {
+    "type": "object",
+    "properties": {
+        "opzioni_menu": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["opzioni_menu"],
+    "additionalProperties": False,
+}
+
+SCHEMA_RECOMMENDATION = {
+    "type": "object",
+    "properties": {
+        "scelta_consigliata": {"type": "string"},
+        "messaggio": {"type": "string"},
+        "alternativa": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    },
+    "required": ["scelta_consigliata", "messaggio", "alternativa"],
+    "additionalProperties": False,
+}
+
+SCHEMA_FEEDBACK = {
+    "type": "object",
+    "properties": {
+        "gradimento": {"type": "string", "enum": ["positivo", "negativo", "neutro"]},
+        "scelta_reale": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "nuove_preferenze": {"type": "array", "items": _SCHEMA_PREFERENZA},
+    },
+    "required": ["gradimento", "scelta_reale", "nuove_preferenze"],
+    "additionalProperties": False,
+}
+
 
 # ---------------------------------------------------------------------------
 # 1. ONBOARDING: parsing delle risposte libere in dati strutturati
@@ -43,21 +116,17 @@ cosa mangiare in mensa. Il tuo unico compito è trasformare la risposta libera \
 dell'utente a UNA domanda di onboarding in dati strutturati.
 
 Regole:
-- Rispondi SOLO con un oggetto JSON valido. Nessun testo prima o dopo, nessun \
-markdown, nessun blocco ```.
-- Se la domanda riguarda le allergie/intolleranze (step 1), rispondi con:
-  {"allergie_intolleranze": ["string", ...]}
-  Se l'utente dice che non ne ha, restituisci una lista vuota.
-- Per tutte le altre domande (step 2, 3, 4), rispondi con:
-  {"preferenze": [
-    {
-      "item": "nome breve e normalizzato dell'ingrediente/piatto/categoria",
-      "sentiment": "like" | "dislike" | "neutro",
-      "peso": intero 1-5 (intensità del sentiment: 5 = molto forte, 1 = lieve),
-      "fonte": "dichiarato",
-      "note": "eventuale condizione o dettaglio (es. 'solo la sera', 'se troppo cotti'), oppure null"
-    }, ...
-  ]}
+- Se la domanda riguarda le allergie/intolleranze (step 1), elenca in \
+"allergie_intolleranze" quelle citate dall'utente. Se dice che non ne ha, \
+restituisci una lista vuota.
+- Per tutte le altre domande (step 2, 3, 4), popola "preferenze", dove ogni \
+voce è fatta così:
+  - "item": nome breve e normalizzato dell'ingrediente/piatto/categoria
+  - "sentiment": gradimento espresso dall'utente
+  - "peso": intensità del sentiment (5 = molto forte, 1 = lieve)
+  - "fonte": "dichiarato" (l'utente lo sta dicendo esplicitamente)
+  - "note": eventuale condizione o dettaglio (es. 'solo la sera', 'se troppo \
+cotti'), oppure null
   Includi una voce per ogni elemento distinto menzionato dall'utente, anche se \
 sono più di uno nella stessa frase.
 - Per lo step 4 (vincoli generali, es. "niente fritti la sera"), traducilo in \
@@ -74,7 +143,7 @@ def build_onboarding_user_prompt(step: int, risposta_utente: str) -> str:
     return (
         f"Domanda posta (step {step}): {step_info['domanda']}\n"
         f"Risposta dell'utente: {risposta_utente!r}\n\n"
-        "Estrai i dati strutturati secondo le regole del system prompt."
+        "Estrai i dati secondo le regole del system prompt."
     )
 
 
@@ -84,15 +153,15 @@ def build_onboarding_user_prompt(step: int, risposta_utente: str) -> str:
 
 SYSTEM_PROMPT_RECOMMENDATION = """\
 Sei un assistente che aiuta una persona a scegliere cosa mangiare in mensa, \
-in base alle sue preferenze dichiarate e al suo storico dei pasti. Rispondi \
-sempre e solo con un oggetto JSON valido (nessun testo prima o dopo, nessun \
-blocco ```), con questa forma:
+in base alle sue preferenze dichiarate e al suo storico dei pasti.
 
-{
-  "scelta_consigliata": "string, l'opzione del menu scelta, testuale, esattamente come nel menu",
-  "messaggio": "string, il messaggio pronto da inviare su Telegram: 1-2 frasi, tono amichevole e diretto, include la scelta e una breve motivazione",
-  "alternativa": "string oppure null: da valorizzare SOLO se l'opzione altrimenti migliore va esclusa per un'allergia/intolleranza, spiegando perché nel messaggio"
-}
+Campi della risposta:
+- "scelta_consigliata": l'opzione del menu scelta, esattamente come compare nel menu
+- "messaggio": il messaggio pronto da inviare su Telegram: 1-2 frasi, tono \
+amichevole e diretto, include la scelta e una breve motivazione
+- "alternativa": da valorizzare SOLO se l'opzione altrimenti migliore va \
+esclusa per un'allergia/intolleranza, spiegando perché nel messaggio; \
+altrimenti null
 
 VINCOLI ASSOLUTI (hard constraint):
 Le allergie/intolleranze elencate ti vengono fornite separatamente da tutto \
@@ -178,7 +247,7 @@ PASTI RECENTI (verbatim, più recenti):
 RIASSUNTO STORICO (pattern a lungo termine):
 {riassunto_storico or "nessuno"}
 
-Scegli l'opzione migliore secondo le regole del system prompt e rispondi in JSON."""
+Scegli l'opzione migliore secondo le regole del system prompt."""
 
 
 # ---------------------------------------------------------------------------
@@ -189,10 +258,6 @@ SYSTEM_PROMPT_MENU_VISION = """\
 Ricevi la foto di un menu di mensa. Estrai SOLO le opzioni di cibo effettivamente \
 disponibili (piatti, non intestazioni di sezione come "primi" o "secondi").
 
-Rispondi SOLO con un oggetto JSON valido, nessun testo prima o dopo, nessun \
-blocco ```, in questa forma:
-{"opzioni_menu": ["string", ...]}
-
 Trascrivi ogni opzione così come scritta nel menu (correggi solo refusi OCR \
 evidenti). Se il testo è illeggibile o non è un menu, restituisci una lista \
 vuota.
@@ -201,8 +266,8 @@ vuota.
 
 def build_menu_vision_user_text() -> str:
     return (
-        "Estrai le opzioni del menu da questa foto e rispondi in JSON "
-        "secondo le regole del system prompt."
+        "Estrai le opzioni del menu da questa foto seguendo le regole del "
+        "system prompt."
     )
 
 
@@ -212,22 +277,15 @@ def build_menu_vision_user_text() -> str:
 
 SYSTEM_PROMPT_FEEDBACK_PARSING = """\
 Interpreti il feedback libero che l'utente dà su un pasto già consigliato, per \
-aggiornarne lo stato e il profilo gusti. Rispondi SOLO con un oggetto JSON \
-valido (nessun testo prima o dopo, nessun blocco ```), in questa forma:
+aggiornarne lo stato e il profilo gusti.
 
-{
-  "gradimento": "positivo" | "negativo" | "neutro",
-  "scelta_reale": "string oppure null: valorizza SOLO se il feedback indica che l'utente ha scelto qualcosa di diverso dal consiglio",
-  "nuove_preferenze": [
-    {
-      "item": "nome breve e normalizzato",
-      "sentiment": "like" | "dislike" | "neutro",
-      "peso": intero 1-5,
-      "fonte": "inferito",
-      "note": "string oppure null"
-    }
-  ]
-}
+Campi della risposta:
+- "gradimento": come è andata complessivamente
+- "scelta_reale": valorizzalo SOLO se il feedback indica che l'utente ha \
+scelto qualcosa di diverso dal consiglio; altrimenti null
+- "nuove_preferenze": voci con "item" (nome breve e normalizzato), \
+"sentiment", "peso" (1-5), "fonte" sempre "inferito" (stai deducendo dal \
+feedback, non da una dichiarazione esplicita) e "note" (dettaglio o null)
 
 Regole:
 - "nuove_preferenze" deve contenere SOLO le voci nuove o da aggiornare (nuovi \
@@ -259,7 +317,7 @@ PREFERENZE ATTUALI:
 FEEDBACK DELL'UTENTE:
 {feedback_testo!r}
 
-Interpreta il feedback e rispondi in JSON secondo le regole del system prompt."""
+Interpreta il feedback secondo le regole del system prompt."""
 
 
 # ---------------------------------------------------------------------------
