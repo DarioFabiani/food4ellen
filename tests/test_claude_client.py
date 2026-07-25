@@ -77,6 +77,125 @@ def test_call_json_ignora_blocco_di_thinking_prima_del_testo(mock_get_client):
 
 
 @patch("claude_client._get_client")
+def test_call_json_riprova_se_la_risposta_non_ha_blocchi_di_testo(mock_get_client):
+    """Regressione BUG-1: se il budget di token finisce nel thinking la risposta
+    non ha blocchi text; l'estrazione deve stare dentro il try e il retry deve
+    alzare max_tokens invece di far esplodere l'handler."""
+    senza_testo = MagicMock()
+    senza_testo.content = [MagicMock(type="thinking", text=None)]
+    senza_testo.stop_reason = "max_tokens"
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [senza_testo, _fake_response('{"ok": true}')]
+    mock_get_client.return_value = mock_client
+
+    risultato = claude_client._call_json("system", "user")
+
+    assert risultato == {"ok": True}
+    assert mock_client.messages.create.call_count == 2
+    primo, secondo = mock_client.messages.create.call_args_list
+    assert secondo.kwargs["max_tokens"] > primo.kwargs["max_tokens"]
+    # niente botta e risposta col modello: non c'era testo da rimandare
+    assert len(secondo.kwargs["messages"]) == 1
+
+
+@patch("claude_client._get_client")
+def test_call_json_solleva_se_nessuna_risposta_ha_testo(mock_get_client):
+    senza_testo = MagicMock()
+    senza_testo.content = [MagicMock(type="thinking", text=None)]
+    senza_testo.stop_reason = "max_tokens"
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = senza_testo
+    mock_get_client.return_value = mock_client
+
+    with pytest.raises(ValueError):
+        claude_client._call_json("system", "user")
+
+    assert mock_client.messages.create.call_count == claude_client.MAX_JSON_RETRIES + 1
+
+
+@patch("claude_client._get_client")
+def test_call_json_passa_effort_e_max_tokens(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = _fake_response('{"ok": true}')
+    mock_get_client.return_value = mock_client
+
+    claude_client._call_json("system", "user")
+
+    kwargs = mock_client.messages.create.call_args.kwargs
+    assert kwargs["output_config"]["effort"] == "low"
+    assert kwargs["max_tokens"] == 2048
+
+
+@patch("claude_client._get_client")
+def test_get_recommendation_usa_effort_medium(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = _fake_response(
+        '{"scelta_consigliata": "insalata", "messaggio": "ok", "alternativa": null}'
+    )
+    mock_get_client.return_value = mock_client
+
+    claude_client.get_recommendation(["insalata"], [], [], [], "")
+
+    kwargs = mock_client.messages.create.call_args.kwargs
+    assert kwargs["output_config"]["effort"] == "medium"
+    assert kwargs["max_tokens"] == 2048
+
+
+@patch("claude_client._get_client")
+def test_extract_menu_from_image_usa_effort_medium(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = _fake_response('{"opzioni_menu": []}')
+    mock_get_client.return_value = mock_client
+
+    claude_client.extract_menu_from_image(b"finti-byte")
+
+    kwargs = mock_client.messages.create.call_args.kwargs
+    assert kwargs["output_config"]["effort"] == "medium"
+    assert kwargs["max_tokens"] == 4096
+
+
+@patch("claude_client._get_client")
+def test_update_riassunto_storico_usa_effort_low_e_max_tokens_alzato(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = _fake_response("riassunto")
+    mock_get_client.return_value = mock_client
+
+    pasto = {"data": "2026-07-09", "scelta_consigliata": "insalata", "scelta_reale": None, "gradimento": None, "feedback": None}
+    claude_client.update_riassunto_storico("", pasto)
+
+    kwargs = mock_client.messages.create.call_args.kwargs
+    assert kwargs["output_config"]["effort"] == "low"
+    assert kwargs["max_tokens"] == 1024
+
+
+@patch("claude_client._get_client")
+def test_parse_onboarding_answer_usa_effort_low(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = _fake_response('{"allergie_intolleranze": []}')
+    mock_get_client.return_value = mock_client
+
+    claude_client.parse_onboarding_answer(1, "nessuna")
+
+    assert mock_client.messages.create.call_args.kwargs["output_config"]["effort"] == "low"
+
+
+@patch("claude_client._get_client")
+def test_parse_feedback_usa_effort_low(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = _fake_response(
+        '{"gradimento": "positivo", "scelta_reale": null, "nuove_preferenze": []}'
+    )
+    mock_get_client.return_value = mock_client
+
+    pasto = {"id": "1", "data": "2026-07-09", "scelta_consigliata": "insalata", "opzioni_presentate": ["insalata"]}
+    claude_client.parse_feedback(pasto, [], "buona")
+
+    assert mock_client.messages.create.call_args.kwargs["output_config"]["effort"] == "low"
+
+
+@patch("claude_client._get_client")
 def test_extract_menu_from_image_restituisce_lista_opzioni(mock_get_client):
     mock_client = MagicMock()
     mock_client.messages.create.return_value = _fake_response('{"opzioni_menu": ["pasta", "insalata"]}')

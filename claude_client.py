@@ -43,7 +43,7 @@ def _testo_risposta(response) -> str:
     raise ValueError("Nessun blocco di testo nella risposta del modello")
 
 
-def _call_json(system: str, content, max_tokens: int = 1024) -> dict:
+def _call_json(system: str, content, max_tokens: int = 2048, effort: str = "low") -> dict:
     messages = [{"role": "user", "content": content}]
     ultimo_errore = None
     for tentativo in range(MAX_JSON_RETRIES + 1):
@@ -53,13 +53,23 @@ def _call_json(system: str, content, max_tokens: int = 1024) -> dict:
             system=system,
             messages=messages,
             thinking={"type": "adaptive"},
+            output_config={"effort": effort},
         )
-        testo = _testo_risposta(response)
+        testo = None
         try:
+            testo = _testo_risposta(response)
             return json.loads(_strip_code_fences(testo))
-        except json.JSONDecodeError as exc:
+        except (ValueError, json.JSONDecodeError) as exc:
             ultimo_errore = exc
-            logger.warning("JSON non valido dal modello (tentativo %d): %s", tentativo + 1, testo)
+            logger.warning(
+                "Risposta non utilizzabile (tentativo %d, stop_reason=%s): %r",
+                tentativo + 1, getattr(response, "stop_reason", None), testo,
+            )
+            if testo is None:
+                # Nessun blocco di testo: tipicamente il budget di token è
+                # finito nel thinking. Non c'è nulla da rimandare al modello.
+                max_tokens = min(max_tokens * 2, 8192)
+                continue
             messages.append({"role": "assistant", "content": testo})
             messages.append(
                 {
@@ -88,7 +98,9 @@ def extract_menu_from_image(image_bytes: bytes, media_type: str = "image/jpeg") 
         },
         {"type": "text", "text": prompts.build_menu_vision_user_text()},
     ]
-    risultato = _call_json(prompts.SYSTEM_PROMPT_MENU_VISION, content, max_tokens=4096)
+    risultato = _call_json(
+        prompts.SYSTEM_PROMPT_MENU_VISION, content, max_tokens=4096, effort="medium"
+    )
     return risultato.get("opzioni_menu", [])
 
 
@@ -102,7 +114,7 @@ def get_recommendation(
     user_prompt = prompts.build_recommendation_user_prompt(
         opzioni_menu, allergie_intolleranze, preferenze, pasti_recenti, riassunto_storico
     )
-    risultato = _call_json(prompts.SYSTEM_PROMPT_RECOMMENDATION, user_prompt)
+    risultato = _call_json(prompts.SYSTEM_PROMPT_RECOMMENDATION, user_prompt, effort="medium")
     logger.info("Raccomandazione: %s", risultato)
     return risultato
 
@@ -118,9 +130,10 @@ def update_riassunto_storico(riassunto_attuale: str, pasto_da_archiviare: dict) 
     user_prompt = prompts.build_summary_update_prompt(riassunto_attuale, pasto_da_archiviare)
     response = _get_client().messages.create(
         model=MODEL,
-        max_tokens=512,
+        max_tokens=1024,
         system=prompts.SYSTEM_PROMPT_SUMMARY_COMPRESSION,
         messages=[{"role": "user", "content": user_prompt}],
         thinking={"type": "adaptive"},
+        output_config={"effort": "low"},
     )
     return _testo_risposta(response).strip()

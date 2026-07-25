@@ -9,10 +9,13 @@ Telegram.
 from __future__ import annotations
 
 import copy
+import logging
 
 import claude_client
 import profile_ops
 from prompts import ONBOARDING_STEPS
+
+logger = logging.getLogger(__name__)
 
 TOTALE_STEP_ONBOARDING = 4
 
@@ -67,8 +70,17 @@ def handle_menu(profile: dict, opzioni_menu: list[str]) -> tuple[dict, list[str]
 
     da_archiviare = profile_ops.pasto_piu_vecchio_da_archiviare(profile)
     if da_archiviare is not None:
-        nuovo_riassunto = claude_client.update_riassunto_storico(profile["riassunto_storico"], da_archiviare)
-        profile = profile_ops.archivia_pasto_piu_vecchio(profile, nuovo_riassunto)
+        # L'archiviazione è manutenzione: se fallisce, la raccomandazione e il
+        # pasto appena registrato devono comunque arrivare all'utente.
+        try:
+            nuovo_riassunto = claude_client.update_riassunto_storico(profile["riassunto_storico"], da_archiviare)
+            profile = profile_ops.archivia_pasto_piu_vecchio(profile, nuovo_riassunto)
+        except Exception:
+            logger.exception("Archiviazione del pasto più vecchio fallita, riprovo al prossimo pasto")
+            if len(profile["pasti_recenti"]) > profile_ops.MAX_PASTI_RECENTI + 5:
+                # Fallimenti ripetuti: tronchiamo comunque, perdendo il
+                # riassunto aggiornato ma non lasciando crescere la lista.
+                profile = profile_ops.archivia_pasto_piu_vecchio(profile, profile["riassunto_storico"])
 
     return profile, [raccomandazione["messaggio"]]
 
