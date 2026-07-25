@@ -52,6 +52,7 @@ def _call_json(system: str, content, max_tokens: int = 1024) -> dict:
             max_tokens=max_tokens,
             system=system,
             messages=messages,
+            thinking={"type": "adaptive"},
         )
         testo = _testo_risposta(response)
         try:
@@ -120,5 +121,6 @@ def update_riassunto_storico(riassunto_attuale: str, pasto_da_archiviare: dict) 
         max_tokens=512,
         system=prompts.SYSTEM_PROMPT_SUMMARY_COMPRESSION,
         messages=[{"role": "user", "content": user_prompt}],
+        thinking={"type": "adaptive"},
     )
     return _testo_risposta(response).strip()
