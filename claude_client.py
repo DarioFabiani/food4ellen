@@ -78,7 +78,7 @@ def extract_menu_from_image(image_bytes: bytes, media_type: str = "image/jpeg") 
         },
         {"type": "text", "text": prompts.build_menu_vision_user_text()},
     ]
-    risultato = _call_json(prompts.SYSTEM_PROMPT_MENU_VISION, content)
+    risultato = _call_json(prompts.SYSTEM_PROMPT_MENU_VISION, content, max_tokens=4096)
     return risultato.get("opzioni_menu", [])
 
 
