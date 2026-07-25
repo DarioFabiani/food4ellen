@@ -134,7 +134,10 @@ def build_recommendation_user_prompt(
     pasti_recenti: list[dict],
     riassunto_storico: str,
 ) -> str:
-    opzioni_fmt = "\n".join(f"- {opzione}" for opzione in opzioni_menu)
+    # Le opzioni sono input non fidato (testo utente o OCR di una foto):
+    # il repr le tiene su una riga e le delimita, riducendo il rischio che
+    # una riga del menu venga letta come istruzione.
+    opzioni_fmt = "\n".join(f"- {opzione!r}" for opzione in opzioni_menu)
     allergie_fmt = ", ".join(allergie_intolleranze) if allergie_intolleranze else "nessuna"
     preferenze_fmt = (
         "\n".join(

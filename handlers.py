@@ -121,6 +121,9 @@ def handle_reset_command(profile: dict) -> tuple[dict, list[str]]:
         return profile, ["Completa prima l'onboarding, poi potrai usare questo comando."]
     profile = copy.deepcopy(profile)
     profile["in_attesa_di_conferma_reset"] = True
+    # Gli stati di attesa sono mutuamente esclusivi: armare la conferma di
+    # reset annulla un'eventuale richiesta di feedback pendente.
+    profile["in_attesa_di_feedback_per"] = None
     return profile, [
         "Sei sicura di voler azzerare tutto il profilo? Rispondi CONFERMA per "
         "procedere, qualsiasi altra cosa per annullare."
@@ -128,21 +131,21 @@ def handle_reset_command(profile: dict) -> tuple[dict, list[str]]:
 
 
 def handle_reset_confirmation(profile: dict, risposta_utente: str) -> tuple[dict, list[str]]:
-    import storage
-
     if risposta_utente.strip().upper() != "CONFERMA":
         profile = copy.deepcopy(profile)
         profile["in_attesa_di_conferma_reset"] = False
+        profile["in_attesa_di_feedback_per"] = None
         return profile, ["Reset annullato."]
 
-    nuovo_profilo = copy.deepcopy(storage.DEFAULT_PROFILE)
-    nuovo_profilo["chat_id"] = profile.get("chat_id")
+    nuovo_profilo = profile_ops.profilo_vuoto(profile.get("chat_id"))
     return nuovo_profilo, ["Profilo azzerato. Ricominciamo dall'onboarding!", messaggio_domanda_onboarding(1)]
 
 
 def handle_incoming_message(
     profile: dict, testo: str | None, immagine_bytes: bytes | None
 ) -> tuple[dict, list[str]]:
+    # Precedenza degli stati (mutuamente esclusivi):
+    # onboarding > conferma reset > feedback > menu.
     if not profile["onboarding_completato"]:
         if testo is None:
             return profile, ["Durante le domande iniziali rispondimi a parole, non con una foto :)"]
