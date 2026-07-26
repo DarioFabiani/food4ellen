@@ -9,12 +9,19 @@ Telegram.
 from __future__ import annotations
 
 import copy
+import logging
 
 import claude_client
 import profile_ops
 from prompts import ONBOARDING_STEPS
 
+logger = logging.getLogger(__name__)
+
 TOTALE_STEP_ONBOARDING = 4
+
+# Formati immagine accettati dall'API Anthropic.
+MEDIA_TYPE_IMMAGINE_SUPPORTATI = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+MAX_IMMAGINE_BYTES = 3_500_000
 
 
 def messaggio_domanda_onboarding(step: int) -> str:
@@ -67,8 +74,17 @@ def handle_menu(profile: dict, opzioni_menu: list[str]) -> tuple[dict, list[str]
 
     da_archiviare = profile_ops.pasto_piu_vecchio_da_archiviare(profile)
     if da_archiviare is not None:
-        nuovo_riassunto = claude_client.update_riassunto_storico(profile["riassunto_storico"], da_archiviare)
-        profile = profile_ops.archivia_pasto_piu_vecchio(profile, nuovo_riassunto)
+        # L'archiviazione è manutenzione: se fallisce, la raccomandazione e il
+        # pasto appena registrato devono comunque arrivare all'utente.
+        try:
+            nuovo_riassunto = claude_client.update_riassunto_storico(profile["riassunto_storico"], da_archiviare)
+            profile = profile_ops.archivia_pasto_piu_vecchio(profile, nuovo_riassunto)
+        except Exception:
+            logger.exception("Archiviazione del pasto più vecchio fallita, riprovo al prossimo pasto")
+            if len(profile["pasti_recenti"]) > profile_ops.MAX_PASTI_RECENTI + 5:
+                # Fallimenti ripetuti: tronchiamo comunque, perdendo il
+                # riassunto aggiornato ma non lasciando crescere la lista.
+                profile = profile_ops.archivia_pasto_piu_vecchio(profile, profile["riassunto_storico"])
 
     return profile, [raccomandazione["messaggio"]]
 
@@ -121,6 +137,9 @@ def handle_reset_command(profile: dict) -> tuple[dict, list[str]]:
         return profile, ["Completa prima l'onboarding, poi potrai usare questo comando."]
     profile = copy.deepcopy(profile)
     profile["in_attesa_di_conferma_reset"] = True
+    # Gli stati di attesa sono mutuamente esclusivi: armare la conferma di
+    # reset annulla un'eventuale richiesta di feedback pendente.
+    profile["in_attesa_di_feedback_per"] = None
     return profile, [
         "Sei sicura di voler azzerare tutto il profilo? Rispondi CONFERMA per "
         "procedere, qualsiasi altra cosa per annullare."
@@ -128,21 +147,24 @@ def handle_reset_command(profile: dict) -> tuple[dict, list[str]]:
 
 
 def handle_reset_confirmation(profile: dict, risposta_utente: str) -> tuple[dict, list[str]]:
-    import storage
-
     if risposta_utente.strip().upper() != "CONFERMA":
         profile = copy.deepcopy(profile)
         profile["in_attesa_di_conferma_reset"] = False
+        profile["in_attesa_di_feedback_per"] = None
         return profile, ["Reset annullato."]
 
-    nuovo_profilo = copy.deepcopy(storage.DEFAULT_PROFILE)
-    nuovo_profilo["chat_id"] = profile.get("chat_id")
+    nuovo_profilo = profile_ops.profilo_vuoto(profile.get("chat_id"))
     return nuovo_profilo, ["Profilo azzerato. Ricominciamo dall'onboarding!", messaggio_domanda_onboarding(1)]
 
 
 def handle_incoming_message(
-    profile: dict, testo: str | None, immagine_bytes: bytes | None
+    profile: dict,
+    testo: str | None,
+    immagine_bytes: bytes | None,
+    media_type: str | None = None,
 ) -> tuple[dict, list[str]]:
+    # Precedenza degli stati (mutuamente esclusivi):
+    # onboarding > conferma reset > feedback > menu.
     if not profile["onboarding_completato"]:
         if testo is None:
             return profile, ["Durante le domande iniziali rispondimi a parole, non con una foto :)"]
@@ -159,7 +181,17 @@ def handle_incoming_message(
         return handle_feedback_answer(profile, testo)
 
     if immagine_bytes is not None:
-        opzioni_menu = claude_client.extract_menu_from_image(immagine_bytes)
+        if media_type and media_type not in MEDIA_TYPE_IMMAGINE_SUPPORTATI:
+            return profile, [
+                "Non riesco a leggere questo tipo di file. Mandami il menu come foto "
+                "normale (JPEG o PNG) invece che come file."
+            ]
+        if len(immagine_bytes) > MAX_IMMAGINE_BYTES:
+            return profile, [
+                "L'immagine è troppo grande per essere analizzata. Rimandamela come "
+                "foto a qualità normale, non come file originale."
+            ]
+        opzioni_menu = claude_client.extract_menu_from_image(immagine_bytes, media_type or "image/jpeg")
     else:
         opzioni_menu = [riga.strip() for riga in (testo or "").splitlines() if riga.strip()]
     return handle_menu(profile, opzioni_menu)

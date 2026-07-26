@@ -56,6 +56,24 @@ def test_handle_reset_confirmation_annulla_se_risposta_diversa_da_conferma():
     assert "annullato" in messaggi[0].lower()
 
 
+def test_handle_reset_confirmation_annullata_azzera_anche_il_feedback_pendente():
+    profilo = _profilo_base(in_attesa_di_feedback_per="abc", in_attesa_di_conferma_reset=True)
+
+    profilo_aggiornato, _ = handlers.handle_reset_confirmation(profilo, "no aspetta")
+
+    assert profilo_aggiornato["in_attesa_di_conferma_reset"] is False
+    assert profilo_aggiornato["in_attesa_di_feedback_per"] is None
+
+
+def test_handle_reset_command_azzera_il_feedback_pendente():
+    profilo = _profilo_base(onboarding_completato=True, in_attesa_di_feedback_per="abc")
+
+    profilo_aggiornato, _ = handlers.handle_reset_command(profilo)
+
+    assert profilo_aggiornato["in_attesa_di_conferma_reset"] is True
+    assert profilo_aggiornato["in_attesa_di_feedback_per"] is None
+
+
 def test_handle_reset_confirmation_azzera_il_profilo_se_confermato():
     profilo = _profilo_base(in_attesa_di_conferma_reset=True, allergie_intolleranze=["glutine"], chat_id=42)
 
