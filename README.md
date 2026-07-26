@@ -27,11 +27,34 @@ uv run python bot.py
 | Variabile | Descrizione |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Token del bot, ottenuto da @BotFather |
-| `ANTHROPIC_API_KEY` | Chiave API Anthropic |
-| `ANTHROPIC_MODEL` | Modello da usare (default `claude-sonnet-5`). Deve supportare **tool use** e **structured outputs**: `claude-sonnet-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-haiku-4-5`. Con modelli più vecchi le chiamate falliscono con un errore 400 |
+| `LLM_MODEL` | Modello da usare, con prefisso provider (default `anthropic/claude-sonnet-5`). Deve supportare **tool use** e **structured output** (`response_format` con `json_schema`) |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / ... | Chiave del provider scelto in `LLM_MODEL` — solo quella serve, le altre restano vuote |
 | `UPSTASH_REDIS_REST_URL` | URL REST del database Upstash Redis |
 | `UPSTASH_REDIS_REST_TOKEN` | Token REST del database Upstash Redis |
 | `ALLOWED_CHAT_ID` | (opzionale) chat_id a cui limitare il bot; se assente, il bot si "aggancia" al primo chat_id che gli scrive e lo salva nel profilo |
+
+## Provider e modelli
+
+Le chiamate al modello passano tutte da [LiteLLM](https://docs.litellm.ai/),
+che parla con qualunque provider (Anthropic, OpenAI, OpenRouter, modelli
+locali...) con un'unica interfaccia. Cambiare provider è solo una questione di
+`LLM_MODEL` + la chiave API giusta:
+
+```bash
+LLM_MODEL=anthropic/claude-sonnet-5      # default — richiede ANTHROPIC_API_KEY
+LLM_MODEL=openai/gpt-5.5                 # richiede OPENAI_API_KEY
+LLM_MODEL=openrouter/<org>/<modello>     # richiede OPENROUTER_API_KEY
+```
+
+Due comportamenti restano specializzati per Anthropic (in `claude_client.py`,
+dietro `_is_anthropic`), perché non hanno un equivalente uniforme cross-provider:
+
+- il **prompt caching** (`cache_control`) su system prompt e definizioni tool;
+- niente structured output "rigido" garantito su modelli OpenRouter free — lo
+  schema JSON viene richiesto ma alcuni modelli gratuiti lo seguono meno
+  fedelmente di Claude, quindi per la lettura delle foto-menu (`descrivi_immagine`)
+  conviene restare su un modello Anthropic anche se il resto della conversazione
+  usa un modello gratuito.
 
 ## Persistenza
 
