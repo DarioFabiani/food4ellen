@@ -5,6 +5,11 @@ profilo corrente e l'input dell'utente, chiamano claude_client quando serve,
 e restituiscono (profilo_aggiornato, messaggi_da_inviare). bot.py chiama
 queste funzioni e si occupa di leggere/scrivere il profilo e di parlare con
 Telegram.
+
+Il grosso della conversazione passa da `processa_messaggio`, che delega
+all'agente. Restano deterministici solo i percorsi in cui una decisione del
+modello non aggiungerebbe nulla o sarebbe pericolosa: la conferma del reset,
+il riepilogo delle preferenze e la manutenzione dello storico.
 """
 from __future__ import annotations
 
@@ -13,114 +18,22 @@ import logging
 
 import claude_client
 import profile_ops
-from prompts import ONBOARDING_STEPS
+import prompts
 
 logger = logging.getLogger(__name__)
-
-TOTALE_STEP_ONBOARDING = 4
 
 # Formati immagine accettati dall'API Anthropic.
 MEDIA_TYPE_IMMAGINE_SUPPORTATI = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMMAGINE_BYTES = 3_500_000
 
-
-def messaggio_domanda_onboarding(step: int) -> str:
-    return ONBOARDING_STEPS[step]["domanda"]
-
-
-def handle_start(profile: dict) -> tuple[dict, list[str]]:
-    if profile["onboarding_completato"]:
-        return profile, ["Bentornata! Mandami il menu di oggi (testo o foto) quando vuoi un consiglio."]
-    messaggi = [
-        "Ciao! Prima di iniziare ti faccio quattro domande veloci per capire i tuoi gusti.",
-        messaggio_domanda_onboarding(profile["onboarding_step"]),
-    ]
-    return profile, messaggi
-
-
-def handle_onboarding_answer(profile: dict, risposta_utente: str) -> tuple[dict, list[str]]:
-    step = profile["onboarding_step"]
-    estratto = claude_client.parse_onboarding_answer(step, risposta_utente)
-    profile = copy.deepcopy(profile)
-
-    if step == 1:
-        profile["allergie_intolleranze"] = estratto.get("allergie_intolleranze", [])
-    else:
-        profile = profile_ops.merge_preferenze(profile, estratto.get("preferenze", []))
-
-    if step >= TOTALE_STEP_ONBOARDING:
-        profile["onboarding_completato"] = True
-        return profile, [
-            "Perfetto, ho registrato le tue preferenze! Da ora in poi mandami il "
-            "menu del giorno (anche una foto) e ti dirò cosa scegliere."
-        ]
-
-    profile["onboarding_step"] = step + 1
-    return profile, [messaggio_domanda_onboarding(profile["onboarding_step"])]
-
-
-def handle_menu(profile: dict, opzioni_menu: list[str]) -> tuple[dict, list[str]]:
-    if not opzioni_menu:
-        return profile, ["Non sono riuscito a leggere delle opzioni di menu da questo messaggio, puoi riprovare?"]
-
-    raccomandazione = claude_client.get_recommendation(
-        opzioni_menu,
-        profile["allergie_intolleranze"],
-        profile["preferenze"],
-        profile["pasti_recenti"],
-        profile["riassunto_storico"],
-    )
-    profile = profile_ops.record_new_meal(profile, opzioni_menu, raccomandazione["scelta_consigliata"])
-
-    da_archiviare = profile_ops.pasto_piu_vecchio_da_archiviare(profile)
-    if da_archiviare is not None:
-        # L'archiviazione è manutenzione: se fallisce, la raccomandazione e il
-        # pasto appena registrato devono comunque arrivare all'utente.
-        try:
-            nuovo_riassunto = claude_client.update_riassunto_storico(profile["riassunto_storico"], da_archiviare)
-            profile = profile_ops.archivia_pasto_piu_vecchio(profile, nuovo_riassunto)
-        except Exception:
-            logger.exception("Archiviazione del pasto più vecchio fallita, riprovo al prossimo pasto")
-            if len(profile["pasti_recenti"]) > profile_ops.MAX_PASTI_RECENTI + 5:
-                # Fallimenti ripetuti: tronchiamo comunque, perdendo il
-                # riassunto aggiornato ma non lasciando crescere la lista.
-                profile = profile_ops.archivia_pasto_piu_vecchio(profile, profile["riassunto_storico"])
-
-    return profile, [raccomandazione["messaggio"]]
-
-
-def handle_feedback_command(profile: dict) -> tuple[dict, list[str]]:
-    if not profile["onboarding_completato"]:
-        return profile, ["Completa prima l'onboarding, poi potrai usare questo comando."]
-    pasto = profile_ops.find_pasto_in_attesa_di_feedback(profile)
-    if pasto is None:
-        return profile, ["Non ho pasti in attesa di feedback al momento."]
-    profile = copy.deepcopy(profile)
-    profile["in_attesa_di_feedback_per"] = pasto["id"]
-    return profile, [f"Com'è andata con '{pasto['scelta_consigliata']}'?"]
-
-
-def handle_feedback_answer(profile: dict, feedback_testo: str) -> tuple[dict, list[str]]:
-    pasto_id = profile.get("in_attesa_di_feedback_per")
-    pasto = next((p for p in profile["pasti_recenti"] if p["id"] == pasto_id), None)
-    if pasto is None:
-        return profile, ["Non so a quale pasto si riferisce, usa prima /feedback."]
-
-    estratto = claude_client.parse_feedback(pasto, profile["preferenze"], feedback_testo)
-    profile = profile_ops.apply_feedback(
-        profile,
-        pasto_id,
-        estratto["gradimento"],
-        estratto.get("scelta_reale"),
-        feedback_testo,
-        estratto.get("nuove_preferenze", []),
-    )
-    profile = copy.deepcopy(profile)
-    profile["in_attesa_di_feedback_per"] = None
-    return profile, ["Grazie, ho aggiornato le tue preferenze!"]
+SEME_START = "L'utente ha appena avviato il bot."
+SEME_FEEDBACK = "L'utente vuole raccontarti com'è andato l'ultimo pasto non ancora valutato."
 
 
 def handle_preferenze_command(profile: dict) -> tuple[dict, list[str]]:
+    """Riepilogo deterministico: è una lettura di dati locali, farla passare
+    dall'agente costerebbe una chiamata e aprirebbe la porta a un riepilogo
+    inventato."""
     righe = ["Allergie/intolleranze: " + (", ".join(profile["allergie_intolleranze"]) or "nessuna")]
     if profile["preferenze"]:
         righe.append("Preferenze:")
@@ -133,13 +46,8 @@ def handle_preferenze_command(profile: dict) -> tuple[dict, list[str]]:
 
 
 def handle_reset_command(profile: dict) -> tuple[dict, list[str]]:
-    if not profile["onboarding_completato"]:
-        return profile, ["Completa prima l'onboarding, poi potrai usare questo comando."]
     profile = copy.deepcopy(profile)
     profile["in_attesa_di_conferma_reset"] = True
-    # Gli stati di attesa sono mutuamente esclusivi: armare la conferma di
-    # reset annulla un'eventuale richiesta di feedback pendente.
-    profile["in_attesa_di_feedback_per"] = None
     return profile, [
         "Sei sicura di voler azzerare tutto il profilo? Rispondi CONFERMA per "
         "procedere, qualsiasi altra cosa per annullare."
@@ -150,48 +58,90 @@ def handle_reset_confirmation(profile: dict, risposta_utente: str) -> tuple[dict
     if risposta_utente.strip().upper() != "CONFERMA":
         profile = copy.deepcopy(profile)
         profile["in_attesa_di_conferma_reset"] = False
-        profile["in_attesa_di_feedback_per"] = None
         return profile, ["Reset annullato."]
 
     nuovo_profilo = profile_ops.profilo_vuoto(profile.get("chat_id"))
-    return nuovo_profilo, ["Profilo azzerato. Ricominciamo dall'onboarding!", messaggio_domanda_onboarding(1)]
+    return nuovo_profilo, [
+        "Profilo azzerato. Ricominciamo da capo: hai allergie o intolleranze "
+        "alimentari? Sono vincoli assoluti, non ti consiglierò mai nulla che le contenga."
+    ]
 
 
-def handle_incoming_message(
+def _manutenzione_storico(profile: dict) -> dict:
+    """Comprime il pasto più vecchio quando lo storico supera la finestra.
+
+    Sta fuori dai tool di proposito: è manutenzione interna, e un suo
+    fallimento non deve diventare un errore su cui l'agente si mette a
+    ragionare. Se fallisce, la risposta all'utente parte lo stesso.
+    """
+    da_archiviare = profile_ops.pasto_piu_vecchio_da_archiviare(profile)
+    if da_archiviare is None:
+        return profile
+
+    try:
+        nuovo_riassunto = claude_client.update_riassunto_storico(
+            profile["riassunto_storico"], da_archiviare
+        )
+        return profile_ops.archivia_pasto_piu_vecchio(profile, nuovo_riassunto)
+    except Exception:
+        logger.exception("Archiviazione del pasto più vecchio fallita, riprovo al prossimo pasto")
+        if len(profile["pasti_recenti"]) > profile_ops.MAX_PASTI_RECENTI + 5:
+            # Fallimenti ripetuti: tronchiamo comunque, perdendo il riassunto
+            # aggiornato ma non lasciando crescere la lista.
+            return profile_ops.archivia_pasto_piu_vecchio(profile, profile["riassunto_storico"])
+        return profile
+
+
+def _errore_immagine(immagine_bytes: bytes, media_type: str | None) -> str | None:
+    if media_type and media_type not in MEDIA_TYPE_IMMAGINE_SUPPORTATI:
+        return (
+            "Non riesco a leggere questo tipo di file. Mandami il menu come foto "
+            "normale (JPEG o PNG) invece che come file."
+        )
+    if len(immagine_bytes) > MAX_IMMAGINE_BYTES:
+        return (
+            "L'immagine è troppo grande per essere analizzata. Rimandamela come "
+            "foto a qualità normale, non come file originale."
+        )
+    return None
+
+
+def processa_messaggio(
     profile: dict,
     testo: str | None,
-    immagine_bytes: bytes | None,
+    immagine_bytes: bytes | None = None,
     media_type: str | None = None,
 ) -> tuple[dict, list[str]]:
-    # Precedenza degli stati (mutuamente esclusivi):
-    # onboarding > conferma reset > feedback > menu.
-    if not profile["onboarding_completato"]:
-        if testo is None:
-            return profile, ["Durante le domande iniziali rispondimi a parole, non con una foto :)"]
-        return handle_onboarding_answer(profile, testo)
+    """Percorso unico per messaggi e comandi conversazionali.
 
+    `testo` può essere un seme generato da un comando (SEME_START,
+    SEME_FEEDBACK) invece che un messaggio scritto dall'utente: per l'agente
+    non cambia nulla, ed è così che esiste un solo percorso di esecuzione.
+    """
+    # Le guardie stanno in testa: valgono prima di qualsiasi chiamata all'API.
+    if immagine_bytes is not None:
+        errore = _errore_immagine(immagine_bytes, media_type)
+        if errore is not None:
+            return profile, [errore]
+
+    # Il reset è distruttivo e resta un ramo hard, prima dell'agente.
     if profile.get("in_attesa_di_conferma_reset"):
         if testo is None:
             return profile, ["Rispondi CONFERMA o scrivimi qualcos'altro per annullare il reset."]
         return handle_reset_confirmation(profile, testo)
 
-    if profile.get("in_attesa_di_feedback_per"):
-        if testo is None:
-            return profile, ["Aspetto un feedback testuale sull'ultimo pasto, non una foto."]
-        return handle_feedback_answer(profile, testo)
-
+    testo_foto = None
     if immagine_bytes is not None:
-        if media_type and media_type not in MEDIA_TYPE_IMMAGINE_SUPPORTATI:
-            return profile, [
-                "Non riesco a leggere questo tipo di file. Mandami il menu come foto "
-                "normale (JPEG o PNG) invece che come file."
-            ]
-        if len(immagine_bytes) > MAX_IMMAGINE_BYTES:
-            return profile, [
-                "L'immagine è troppo grande per essere analizzata. Rimandamela come "
-                "foto a qualità normale, non come file originale."
-            ]
-        opzioni_menu = claude_client.extract_menu_from_image(immagine_bytes, media_type or "image/jpeg")
-    else:
-        opzioni_menu = [riga.strip() for riga in (testo or "").splitlines() if riga.strip()]
-    return handle_menu(profile, opzioni_menu)
+        testo_foto = claude_client.descrivi_immagine(immagine_bytes, media_type or "image/jpeg")
+
+    testo_utente = testo or "(nessun testo, solo una foto)"
+    profile = profile_ops.aggiungi_a_cronologia(profile, "utente", testo_utente)
+
+    blocchi = prompts.build_blocchi_utente(profile, testo_utente, testo_foto)
+    profile, risposta = claude_client.esegui_agente(
+        prompts.SYSTEM_PROMPT_AGENTE, blocchi, profile
+    )
+
+    profile = _manutenzione_storico(profile)
+    profile = profile_ops.aggiungi_a_cronologia(profile, "bot", risposta)
+    return profile, [risposta]

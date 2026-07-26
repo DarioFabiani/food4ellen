@@ -19,8 +19,11 @@ def _update(update_id: int = 100, chat_id: int = 42, testo: str | None = "ciao")
     update = MagicMock()
     update.update_id = update_id
     update.effective_chat.id = chat_id
+    # Il "sta scrivendo…" mandato prima di ogni turno di agente.
+    update.effective_chat.send_action = AsyncMock()
     messaggio = MagicMock()
     messaggio.text = testo
+    messaggio.caption = None
     messaggio.photo = []
     messaggio.document = None
     messaggio.reply_text = AsyncMock()
@@ -122,7 +125,7 @@ def test_update_gia_processato_regge_un_ultimo_update_id_corrotto():
 
 
 @patch.dict("os.environ", {}, clear=True)
-@patch("bot.handlers.handle_incoming_message")
+@patch("bot.handlers.processa_messaggio")
 @patch("bot.storage.save_profile")
 @patch("bot.storage.load_profile")
 async def test_messaggio_ignora_un_update_gia_processato(mock_load, mock_save, mock_handle):
@@ -137,7 +140,7 @@ async def test_messaggio_ignora_un_update_gia_processato(mock_load, mock_save, m
 
 
 @patch.dict("os.environ", {}, clear=True)
-@patch("bot.handlers.handle_incoming_message")
+@patch("bot.handlers.processa_messaggio")
 @patch("bot.storage.save_profile")
 @patch("bot.storage.load_profile")
 async def test_messaggio_processa_un_update_nuovo(mock_load, mock_save, mock_handle):
@@ -153,7 +156,7 @@ async def test_messaggio_processa_un_update_nuovo(mock_load, mock_save, mock_han
 
 
 @patch.dict("os.environ", {"ALLOWED_CHAT_ID": "42"}, clear=True)
-@patch("bot.handlers.handle_incoming_message")
+@patch("bot.handlers.processa_messaggio")
 @patch("bot.storage.load_profile")
 async def test_messaggio_ignora_una_chat_non_consentita(mock_load, mock_handle):
     mock_load.return_value = _profilo_base(chat_id=42)
@@ -171,7 +174,7 @@ async def test_messaggio_ignora_una_chat_non_consentita(mock_load, mock_handle):
 
 
 @patch.dict("os.environ", {}, clear=True)
-@patch("bot.handlers.handle_incoming_message")
+@patch("bot.handlers.processa_messaggio")
 @patch("bot.storage.save_profile")
 @patch("bot.storage.load_profile")
 async def test_messaggio_con_documento_png_propaga_il_media_type(mock_load, mock_save, mock_handle):
@@ -193,7 +196,7 @@ async def test_messaggio_con_documento_png_propaga_il_media_type(mock_load, mock
 
 
 @patch.dict("os.environ", {}, clear=True)
-@patch("bot.handlers.handle_incoming_message")
+@patch("bot.handlers.processa_messaggio")
 @patch("bot.storage.save_profile")
 @patch("bot.storage.load_profile")
 async def test_messaggio_con_foto_usa_jpeg(mock_load, mock_save, mock_handle):
@@ -291,3 +294,94 @@ async def test_export_command_rivendica_la_chat_come_rispondi(mock_load, mock_sa
     salvato = mock_save.call_args[0][0]
     assert salvato["chat_id"] == 42
     assert salvato["ultimo_update_id"] == 9
+
+
+# ---------------------------------------------------------------------------
+# comandi conversazionali: semi per l'agente, non percorsi a parte
+# ---------------------------------------------------------------------------
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("bot.handlers.processa_messaggio")
+@patch("bot.storage.save_profile")
+@patch("bot.storage.load_profile")
+async def test_start_passa_dall_agente_con_il_proprio_seme(mock_load, mock_save, mock_processa):
+    profilo = _profilo_base(chat_id=42)
+    mock_load.return_value = profilo
+    mock_processa.return_value = (profilo, ["ciao!"])
+
+    await bot.start(_update(update_id=1), None)
+
+    mock_processa.assert_called_once_with(profilo, bot.handlers.SEME_START, None, None)
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("bot.handlers.processa_messaggio")
+@patch("bot.storage.save_profile")
+@patch("bot.storage.load_profile")
+async def test_feedback_passa_dall_agente_con_il_proprio_seme(mock_load, mock_save, mock_processa):
+    profilo = _profilo_base(chat_id=42, onboarding_completato=True)
+    mock_load.return_value = profilo
+    mock_processa.return_value = (profilo, ["com'è andata?"])
+
+    await bot.feedback_command(_update(update_id=2), None)
+
+    mock_processa.assert_called_once_with(profilo, bot.handlers.SEME_FEEDBACK, None, None)
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("bot.handlers.processa_messaggio")
+@patch("bot.storage.save_profile")
+@patch("bot.storage.load_profile")
+async def test_prima_di_un_turno_di_agente_parte_il_sta_scrivendo(mock_load, mock_save, mock_processa):
+    profilo = _profilo_base(chat_id=42)
+    mock_load.return_value = profilo
+    mock_processa.return_value = (profilo, ["ok"])
+    update = _update()
+
+    await bot.messaggio(update, None)
+
+    update.effective_chat.send_action.assert_awaited_once()
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("bot.handlers.handle_preferenze_command")
+@patch("bot.storage.save_profile")
+@patch("bot.storage.load_profile")
+async def test_preferenze_resta_deterministico(mock_load, mock_save, mock_handle):
+    """È una lettura di dati locali: non deve costare una chiamata al modello."""
+    profilo = _profilo_base(chat_id=42)
+    mock_load.return_value = profilo
+    mock_handle.return_value = (profilo, ["riepilogo"])
+    update = _update(update_id=3)
+
+    await bot.preferenze_command(update, None)
+
+    mock_handle.assert_called_once_with(profilo)
+    update.effective_chat.send_action.assert_not_awaited()
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("bot.handlers.processa_messaggio")
+@patch("bot.storage.save_profile")
+@patch("bot.storage.load_profile")
+async def test_la_didascalia_di_una_foto_arriva_all_agente(mock_load, mock_save, mock_processa):
+    """Con un allegato il testo del messaggio è la caption: dice spesso cosa
+    farne, quindi non va persa."""
+    profilo = _profilo_base(chat_id=42, onboarding_completato=True)
+    mock_load.return_value = profilo
+    mock_processa.return_value = (profilo, ["ok"])
+
+    update = _update(testo=None)
+    update.effective_message.caption = "questo è quello che ho mangiato"
+    file_scaricato = MagicMock()
+    file_scaricato.download_as_bytearray = AsyncMock(return_value=bytearray(b"jpeg"))
+    foto = MagicMock()
+    foto.get_file = AsyncMock(return_value=file_scaricato)
+    update.effective_message.photo = [foto]
+
+    await bot.messaggio(update, None)
+
+    mock_processa.assert_called_once_with(
+        profilo, "questo è quello che ho mangiato", b"jpeg", "image/jpeg"
+    )

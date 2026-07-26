@@ -11,9 +11,9 @@ def _profilo_base(**overrides) -> dict:
 
 
 CHIAVI_USATE_DA_HANDLERS = {
-    "chat_id", "onboarding_completato", "onboarding_step", "allergie_intolleranze",
-    "preferenze", "pasti_recenti", "riassunto_storico",
-    "in_attesa_di_feedback_per", "in_attesa_di_conferma_reset", "ultimo_update_id",
+    "chat_id", "onboarding_completato", "allergie_intolleranze",
+    "preferenze", "pasti_recenti", "riassunto_storico", "cronologia",
+    "in_attesa_di_conferma_reset", "ultimo_update_id",
 }
 
 
@@ -149,27 +149,36 @@ def test_normalizza_profilo_ripulisce_preferenze_e_tipi_sbagliati():
         ({"ultimo_update_id": "100"}, "ultimo_update_id", None),
         ({"ultimo_update_id": 12.5}, "ultimo_update_id", None),
         ({"ultimo_update_id": True}, "ultimo_update_id", None),
-        ({"onboarding_step": "2"}, "onboarding_step", 1),
-        ({"onboarding_step": 0}, "onboarding_step", 1),
-        ({"onboarding_step": 5}, "onboarding_step", 1),
-        ({"onboarding_step": True}, "onboarding_step", 1),
         ({"chat_id": "42"}, "chat_id", None),
         ({"chat_id": True}, "chat_id", None),
+        ({"onboarding_completato": "si"}, "onboarding_completato", False),
+        ({"onboarding_completato": 1}, "onboarding_completato", False),
     ],
 )
 def test_normalizza_profilo_ripristina_gli_scalari_col_tipo_sbagliato(dati, campo, atteso):
     risultato = profile_ops.normalizza_profilo(dati)
     assert risultato[campo] == atteso
-    assert not isinstance(risultato[campo], bool)
+    if campo != "onboarding_completato":
+        assert not isinstance(risultato[campo], bool)
 
 
 def test_normalizza_profilo_conserva_gli_scalari_validi():
     risultato = profile_ops.normalizza_profilo(
-        {"ultimo_update_id": 987, "onboarding_step": 3, "chat_id": -100123}
+        {"ultimo_update_id": 987, "onboarding_completato": True, "chat_id": -100123}
     )
     assert risultato["ultimo_update_id"] == 987
-    assert risultato["onboarding_step"] == 3
+    assert risultato["onboarding_completato"] is True
     assert risultato["chat_id"] == -100123
+
+
+def test_normalizza_profilo_scarta_i_campi_non_piu_nello_schema():
+    """I campi rimossi dallo schema devono sparire dal blob salvato, altrimenti
+    si trascinerebbero dietro per sempre."""
+    risultato = profile_ops.normalizza_profilo(
+        {"onboarding_step": 3, "in_attesa_di_feedback_per": "abc", "roba_a_caso": 1}
+    )
+
+    assert set(risultato) == set(profile_ops.DEFAULT_PROFILE)
 
 
 def test_merge_preferenze_aggiunge_nuove_voci():
@@ -194,43 +203,22 @@ def test_merge_preferenze_sovrascrive_voce_esistente():
 def test_record_new_meal_aggiunge_pasto_con_id_e_feedback_null():
     profilo = _profilo_base()
 
-    risultato = profile_ops.record_new_meal(profilo, ["pasta al forno", "insalata"], "insalata")
+    risultato, pasto_id = profile_ops.record_new_meal(
+        profilo, ["pasta al forno", "insalata"], "insalata"
+    )
 
     assert len(risultato["pasti_recenti"]) == 1
     pasto = risultato["pasti_recenti"][0]
+    assert pasto["id"] == pasto_id
     assert pasto["scelta_consigliata"] == "insalata"
     assert pasto["opzioni_presentate"] == ["pasta al forno", "insalata"]
     assert pasto["feedback"] is None
     assert pasto["gradimento"] is None
     assert pasto["scelta_reale"] is None
-    assert "id" in pasto and "data" in pasto
+    assert "data" in pasto
 
 
-def test_find_pasto_in_attesa_di_feedback_trova_il_primo_senza_feedback():
-    valutato = {"id": "1", "feedback": "buono", "gradimento": "positivo"}
-    non_valutato = {"id": "2", "feedback": None, "gradimento": None}
-    profilo = _profilo_base(pasti_recenti=[valutato, non_valutato])
 
-    risultato = profile_ops.find_pasto_in_attesa_di_feedback(profilo)
-
-    assert risultato["id"] == "2"
-
-
-def test_find_pasto_in_attesa_di_feedback_preferisce_il_piu_recente_tra_due_non_valutati():
-    piu_vecchio = {"id": "1", "feedback": None, "gradimento": None}
-    piu_recente = {"id": "2", "feedback": None, "gradimento": None}
-    profilo = _profilo_base(pasti_recenti=[piu_vecchio, piu_recente])
-
-    risultato = profile_ops.find_pasto_in_attesa_di_feedback(profilo)
-
-    assert risultato["id"] == "2"
-
-
-def test_find_pasto_in_attesa_di_feedback_restituisce_none_se_tutti_valutati():
-    valutato = {"id": "1", "feedback": "buono", "gradimento": "positivo"}
-    profilo = _profilo_base(pasti_recenti=[valutato])
-
-    assert profile_ops.find_pasto_in_attesa_di_feedback(profilo) is None
 
 
 def test_apply_feedback_aggiorna_pasto_e_preferenze():
@@ -277,3 +265,112 @@ def test_archivia_pasto_piu_vecchio_rimuove_il_primo_e_aggiorna_riassunto():
     assert len(risultato["pasti_recenti"]) == 20
     assert risultato["pasti_recenti"][0]["id"] == "1"
     assert risultato["riassunto_storico"] == "nuovo riassunto"
+
+
+# --- aggiorna_allergie ---------------------------------------------------
+
+
+def test_aggiorna_allergie_aggiunge_mantenendo_le_esistenti():
+    profilo = _profilo_base(allergie_intolleranze=["glutine"])
+
+    risultato, finale = profile_ops.aggiorna_allergie(profilo, ["lattosio"], "aggiungi")
+
+    assert finale == ["glutine", "lattosio"]
+    assert risultato["allergie_intolleranze"] == finale
+    assert profilo["allergie_intolleranze"] == ["glutine"]
+
+
+def test_aggiorna_allergie_sostituisce_scarta_le_precedenti():
+    profilo = _profilo_base(allergie_intolleranze=["glutine", "lattosio"])
+
+    _, finale = profile_ops.aggiorna_allergie(profilo, ["noci"], "sostituisci")
+
+    assert finale == ["noci"]
+
+
+def test_aggiorna_allergie_deduplica_ignorando_maiuscole_e_spazi():
+    profilo = _profilo_base(allergie_intolleranze=["glutine"])
+
+    _, finale = profile_ops.aggiorna_allergie(profilo, ["  Glutine ", "lattosio", "lattosio"])
+
+    assert finale == ["glutine", "lattosio"]
+
+
+@pytest.mark.parametrize("voce", ["", "   ", None, 42, ["glutine"]])
+def test_aggiorna_allergie_scarta_le_voci_inutilizzabili(voce):
+    profilo = _profilo_base(allergie_intolleranze=[])
+
+    _, finale = profile_ops.aggiorna_allergie(profilo, [voce, "noci"])
+
+    assert finale == ["noci"]
+
+
+# --- cronologia ----------------------------------------------------------
+
+
+def test_aggiungi_a_cronologia_appende_senza_mutare_l_originale():
+    profilo = _profilo_base(cronologia=[])
+
+    risultato = profile_ops.aggiungi_a_cronologia(profilo, "utente", "ciao")
+
+    assert risultato["cronologia"] == [{"ruolo": "utente", "testo": "ciao"}]
+    assert profilo["cronologia"] == []
+
+
+def test_aggiungi_a_cronologia_tronca_alla_finestra_massima():
+    profilo = _profilo_base(cronologia=[])
+
+    for i in range(profile_ops.MAX_CRONOLOGIA + 5):
+        profilo = profile_ops.aggiungi_a_cronologia(profilo, "utente", f"messaggio {i}")
+
+    assert len(profilo["cronologia"]) == profile_ops.MAX_CRONOLOGIA
+    assert profilo["cronologia"][-1]["testo"] == f"messaggio {profile_ops.MAX_CRONOLOGIA + 4}"
+    assert profilo["cronologia"][0]["testo"] == "messaggio 5"
+
+
+def test_aggiungi_a_cronologia_tronca_i_testi_lunghi():
+    profilo = _profilo_base(cronologia=[])
+
+    risultato = profile_ops.aggiungi_a_cronologia(profilo, "bot", "x" * 5000)
+
+    assert len(risultato["cronologia"][0]["testo"]) == profile_ops.MAX_CARATTERI_TURNO
+
+
+@pytest.mark.parametrize(
+    "ruolo, testo",
+    [("sistema", "ciao"), ("utente", ""), ("utente", "   "), ("utente", None), (None, "ciao")],
+)
+def test_aggiungi_a_cronologia_ignora_i_turni_inutilizzabili(ruolo, testo):
+    profilo = _profilo_base(cronologia=[])
+
+    risultato = profile_ops.aggiungi_a_cronologia(profilo, ruolo, testo)
+
+    assert risultato["cronologia"] == []
+
+
+def test_normalizza_profilo_scarta_i_turni_malformati():
+    risultato = profile_ops.normalizza_profilo(
+        {
+            "cronologia": [
+                {"ruolo": "utente", "testo": "buono"},
+                {"ruolo": "sistema", "testo": "ruolo non valido"},
+                "non un dict",
+                {"ruolo": "bot"},
+            ]
+        }
+    )
+
+    assert risultato["cronologia"] == [{"ruolo": "utente", "testo": "buono"}]
+
+
+def test_normalizza_profilo_riapplica_il_tetto_della_cronologia_in_lettura():
+    troppi = [{"ruolo": "utente", "testo": f"m{i}"} for i in range(profile_ops.MAX_CRONOLOGIA + 10)]
+
+    risultato = profile_ops.normalizza_profilo({"cronologia": troppi})
+
+    assert len(risultato["cronologia"]) == profile_ops.MAX_CRONOLOGIA
+    assert risultato["cronologia"][-1]["testo"] == troppi[-1]["testo"]
+
+
+def test_normalizza_profilo_ripristina_la_cronologia_se_non_e_una_lista():
+    assert profile_ops.normalizza_profilo({"cronologia": "boh"})["cronologia"] == []

@@ -1,6 +1,7 @@
 """Entry point del bot: wiring di python-telegram-bot e polling."""
 from __future__ import annotations
 
+import asyncio
 import functools
 import io
 import json
@@ -12,6 +13,7 @@ import anthropic
 import requests
 from dotenv import load_dotenv
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 import handlers
@@ -41,7 +43,8 @@ def _update_gia_processato(profile: dict, update: Update) -> bool:
 async def _profilo_per_update(update: Update) -> dict | None:
     """Carica il profilo e applica i due filtri comuni a tutti gli handler:
     chat autorizzata e update non già processato. None = non fare nulla."""
-    profile = storage.load_profile()
+    # storage usa requests (sincrono): fuori dall'event loop come tutto il resto.
+    profile = await asyncio.to_thread(storage.load_profile)
     if not _chat_consentita(profile, update.effective_chat.id):
         return None
     if _update_gia_processato(profile, update):
@@ -50,12 +53,25 @@ async def _profilo_per_update(update: Update) -> dict | None:
     return profile
 
 
+async def _agente(update: Update, profile: dict, testo, immagine_bytes=None, media_type=None):
+    """Esegue un turno di agente fuori dall'event loop.
+
+    Il client Anthropic è sincrono e il loop può fare più chiamate di fila: se
+    girasse qui bloccherebbe il polling di python-telegram-bot per decine di
+    secondi. Il "sta scrivendo…" copre l'attesa lato utente.
+    """
+    await update.effective_chat.send_action(ChatAction.TYPING)
+    return await asyncio.to_thread(
+        handlers.processa_messaggio, profile, testo, immagine_bytes, media_type
+    )
+
+
 async def _rispondi(update: Update, profile: dict, messaggi: list[str]) -> None:
     if profile["chat_id"] is None:
         profile["chat_id"] = update.effective_chat.id
         logger.info("chat_id registrato: %s", profile["chat_id"])
     profile["ultimo_update_id"] = update.update_id
-    storage.save_profile(profile)
+    await asyncio.to_thread(storage.save_profile, profile)
     for messaggio in messaggi:
         await update.effective_message.reply_text(messaggio)
 
@@ -102,7 +118,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     profile = await _profilo_per_update(update)
     if profile is None:
         return
-    profile, messaggi = handlers.handle_start(profile)
+    # I comandi conversazionali sono semi per l'agente, non percorsi a parte:
+    # così esiste un solo flusso di esecuzione da mantenere.
+    profile, messaggi = await _agente(update, profile, handlers.SEME_START)
     await _rispondi(update, profile, messaggi)
 
 
@@ -111,7 +129,7 @@ async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     profile = await _profilo_per_update(update)
     if profile is None:
         return
-    profile, messaggi = handlers.handle_feedback_command(profile)
+    profile, messaggi = await _agente(update, profile, handlers.SEME_FEEDBACK)
     await _rispondi(update, profile, messaggi)
 
 
@@ -141,7 +159,7 @@ async def sblocca_chat_command(update: Update, context: ContextTypes.DEFAULT_TYP
     # Niente _rispondi: riassegnerebbe subito il chat_id appena liberato.
     profile = profile_ops.sblocca_chat(profile)
     profile["ultimo_update_id"] = update.update_id
-    storage.save_profile(profile)
+    await asyncio.to_thread(storage.save_profile, profile)
     await update.effective_message.reply_text(
         "Chat sbloccata: il prossimo che mi scrive verrà registrato come proprietario. "
         "(Se hai impostato ALLOWED_CHAT_ID su Railway, quella variabile ha comunque la precedenza.)"
@@ -162,7 +180,7 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         profile["chat_id"] = update.effective_chat.id
         logger.info("chat_id registrato: %s", profile["chat_id"])
     profile["ultimo_update_id"] = update.update_id
-    storage.save_profile(profile)
+    await asyncio.to_thread(storage.save_profile, profile)
 
 
 @_con_gestione_errori
@@ -179,15 +197,18 @@ async def messaggio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         file = await update.effective_message.photo[-1].get_file()
         immagine_bytes = bytes(await file.download_as_bytearray())
         media_type = "image/jpeg"  # Telegram ricomprime sempre le foto in JPEG
-        testo = None
+        # La didascalia è il testo del messaggio quando c'è un allegato: dice
+        # spesso cosa farne ("questo è quello che ho mangiato"), quindi va
+        # passata all'agente insieme alla foto.
+        testo = update.effective_message.caption
     elif update.effective_message.document:
         documento = update.effective_message.document
         file = await documento.get_file()
         immagine_bytes = bytes(await file.download_as_bytearray())
         media_type = documento.mime_type or ""
-        testo = None
+        testo = update.effective_message.caption
 
-    profile, messaggi = handlers.handle_incoming_message(profile, testo, immagine_bytes, media_type)
+    profile, messaggi = await _agente(update, profile, testo, immagine_bytes, media_type)
     await _rispondi(update, profile, messaggi)
 
 
