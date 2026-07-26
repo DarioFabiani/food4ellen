@@ -13,6 +13,10 @@ dichiarare una nuova intolleranza o fargli una domanda, in qualsiasi ordine e
 senza comandi. Se dici «buonissima, ma un po' salata» dopo un consiglio, lui
 capisce che è un feedback e se lo segna — non lo scambia per un nuovo menu.
 
+📐 [`architecture.md`](architecture.md) — diagrammi di moduli, flusso dei
+messaggi, loop agentico e memoria.
+🤖 [`CLAUDE.md`](CLAUDE.md) — convenzioni e vincoli per chi ci mette mano.
+
 ## Sviluppo locale
 
 ```bash
