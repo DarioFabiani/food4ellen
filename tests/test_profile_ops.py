@@ -143,6 +143,35 @@ def test_normalizza_profilo_ripulisce_preferenze_e_tipi_sbagliati():
     assert risultato["riassunto_storico"] == ""
 
 
+@pytest.mark.parametrize(
+    "dati, campo, atteso",
+    [
+        ({"ultimo_update_id": "100"}, "ultimo_update_id", None),
+        ({"ultimo_update_id": 12.5}, "ultimo_update_id", None),
+        ({"ultimo_update_id": True}, "ultimo_update_id", None),
+        ({"onboarding_step": "2"}, "onboarding_step", 1),
+        ({"onboarding_step": 0}, "onboarding_step", 1),
+        ({"onboarding_step": 5}, "onboarding_step", 1),
+        ({"onboarding_step": True}, "onboarding_step", 1),
+        ({"chat_id": "42"}, "chat_id", None),
+        ({"chat_id": True}, "chat_id", None),
+    ],
+)
+def test_normalizza_profilo_ripristina_gli_scalari_col_tipo_sbagliato(dati, campo, atteso):
+    risultato = profile_ops.normalizza_profilo(dati)
+    assert risultato[campo] == atteso
+    assert not isinstance(risultato[campo], bool)
+
+
+def test_normalizza_profilo_conserva_gli_scalari_validi():
+    risultato = profile_ops.normalizza_profilo(
+        {"ultimo_update_id": 987, "onboarding_step": 3, "chat_id": -100123}
+    )
+    assert risultato["ultimo_update_id"] == 987
+    assert risultato["onboarding_step"] == 3
+    assert risultato["chat_id"] == -100123
+
+
 def test_merge_preferenze_aggiunge_nuove_voci():
     profilo = _profilo_base(preferenze=[])
     nuove = [{"item": "broccoli", "sentiment": "dislike", "peso": 4, "fonte": "dichiarato", "note": None}]

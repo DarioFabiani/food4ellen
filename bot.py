@@ -158,6 +158,9 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     payload = json.dumps(profile, ensure_ascii=False, indent=2).encode("utf-8")
     await update.effective_message.reply_document(
         document=io.BytesIO(payload), filename="profilo-mensa.json")
+    if profile["chat_id"] is None:
+        profile["chat_id"] = update.effective_chat.id
+        logger.info("chat_id registrato: %s", profile["chat_id"])
     profile["ultimo_update_id"] = update.update_id
     storage.save_profile(profile)
 

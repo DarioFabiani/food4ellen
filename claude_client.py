@@ -59,18 +59,11 @@ def _call_json(system: str, content, schema: dict, max_tokens: int = 2048, effor
                 "Risposta non utilizzabile (tentativo %d, stop_reason=%s): %r",
                 tentativo + 1, getattr(response, "stop_reason", None), testo,
             )
-            if testo is None:
-                # Nessun blocco di testo: tipicamente il budget di token è
-                # finito nel thinking. Non c'è nulla da rimandare al modello.
-                max_tokens = min(max_tokens * 2, 8192)
-                continue
-            messages.append({"role": "assistant", "content": testo})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": "La risposta precedente non era JSON valido. Rispondi SOLO con JSON valido, nessun altro testo.",
-                }
-            )
+            # Con lo schema imposto dal server il modello non sta sbagliando
+            # formato: o il budget di token è finito nel thinking (nessun blocco
+            # di testo) o il JSON è troncato a metà. In entrambi i casi la
+            # correzione è più margine, non un messaggio di correzione.
+            max_tokens = min(max_tokens * 2, 8192)
     raise ValueError(
         f"Impossibile ottenere JSON valido dopo {MAX_JSON_RETRIES + 1} tentativi"
     ) from ultimo_errore

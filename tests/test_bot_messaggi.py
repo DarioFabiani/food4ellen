@@ -5,6 +5,7 @@ import anthropic
 import requests
 
 import bot
+import profile_ops
 import storage
 
 
@@ -124,6 +125,11 @@ def test_update_gia_processato():
     assert bot._update_gia_processato(profilo, _update(update_id=5)) is True
     assert bot._update_gia_processato(profilo, _update(update_id=4)) is True
     assert bot._update_gia_processato(profilo, _update(update_id=6)) is False
+
+
+def test_update_gia_processato_regge_un_ultimo_update_id_corrotto():
+    profilo = profile_ops.normalizza_profilo({"ultimo_update_id": "100"})
+    assert bot._update_gia_processato(profilo, _update(update_id=5)) is False
 
 
 @patch.dict("os.environ", {}, clear=True)
@@ -282,3 +288,17 @@ async def test_export_command_invia_il_profilo_come_documento(mock_load, mock_sa
     contenuto = json.loads(kwargs["document"].getvalue().decode("utf-8"))
     assert contenuto["allergie_intolleranze"] == ["glutine"]
     assert mock_save.call_args[0][0]["ultimo_update_id"] == 9
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("bot.storage.save_profile")
+@patch("bot.storage.load_profile")
+async def test_export_command_rivendica_la_chat_come_rispondi(mock_load, mock_save):
+    mock_load.return_value = _profilo_base(chat_id=None)
+    update = _update(update_id=9, chat_id=42)
+
+    await bot.export_command(update, None)
+
+    salvato = mock_save.call_args[0][0]
+    assert salvato["chat_id"] == 42
+    assert salvato["ultimo_update_id"] == 9

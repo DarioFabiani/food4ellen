@@ -45,6 +45,10 @@ def test_call_json_riprova_su_risposta_troncata(mock_get_client):
 
     assert risultato == {"ok": True}
     assert mock_client.messages.create.call_count == 2
+    primo, secondo = mock_client.messages.create.call_args_list
+    assert secondo.kwargs["max_tokens"] > primo.kwargs["max_tokens"]
+    # niente re-prompt: col JSON troncato la correzione è più margine di token
+    assert len(secondo.kwargs["messages"]) == 1
 
 
 @patch("claude_client._get_client")

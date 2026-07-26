@@ -96,6 +96,31 @@ def normalizza_profilo(dati: dict) -> dict:
         logger.warning("riassunto_storico non è una stringa, ripristino il default")
         profilo["riassunto_storico"] = ""
 
+    ultimo_update_id = profilo["ultimo_update_id"]
+    if ultimo_update_id is not None and (
+        isinstance(ultimo_update_id, bool) or not isinstance(ultimo_update_id, int)
+    ):
+        # Un tipo sbagliato qui fa esplodere bot._update_gia_processato prima di
+        # ogni dispatch: il bot diventerebbe irrecuperabile da Telegram.
+        logger.warning("ultimo_update_id non è un intero, ripristino il default")
+        profilo["ultimo_update_id"] = DEFAULT_PROFILE["ultimo_update_id"]
+
+    onboarding_step = profilo["onboarding_step"]
+    if (
+        isinstance(onboarding_step, bool)
+        or not isinstance(onboarding_step, int)
+        or not 1 <= onboarding_step <= 4
+    ):
+        logger.warning("onboarding_step non valido (%r), ripristino il default", onboarding_step)
+        profilo["onboarding_step"] = DEFAULT_PROFILE["onboarding_step"]
+
+    chat_id = profilo["chat_id"]
+    if chat_id is not None and (isinstance(chat_id, bool) or not isinstance(chat_id, int)):
+        # Un chat_id non intero rende _chat_consentita sempre False: il bot
+        # smetterebbe di rispondere in silenzio.
+        logger.warning("chat_id non è un intero, ripristino il default")
+        profilo["chat_id"] = DEFAULT_PROFILE["chat_id"]
+
     return profilo
 
 
