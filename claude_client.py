@@ -1,4 +1,11 @@
-"""Wrapper attorno alle chiamate Anthropic API usate dal bot."""
+"""Wrapper attorno alle chiamate Anthropic API usate dal bot.
+
+Tre chiamate distinte:
+- `esegui_agente`, il loop con i tool che gestisce la conversazione;
+- `descrivi_immagine`, one-shot con structured output, per convertire una foto
+  in testo prima che entri nella conversazione;
+- `update_riassunto_storico`, one-shot di manutenzione sullo storico pasti.
+"""
 from __future__ import annotations
 
 import base64
@@ -8,12 +15,22 @@ import os
 
 import anthropic
 
+import agent_tools
 import prompts
 
 logger = logging.getLogger(__name__)
 
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
 MAX_JSON_RETRIES = 1
+
+# Oltre questo numero di giri il modello non sta convergendo: meglio chiudere a
+# parole che continuare a chiamare tool.
+MAX_ITERAZIONI_AGENTE = 6
+MAX_TOKENS = 8192
+
+RISPOSTA_DI_RIPIEGO = (
+    "Ho aggiornato quello che dovevo, ma non sono riuscito a metterlo in parole. Riprova a scrivermi."
+)
 
 _client: anthropic.Anthropic | None = None
 
@@ -63,68 +80,146 @@ def _call_json(system: str, content, schema: dict, max_tokens: int = 2048, effor
             # formato: o il budget di token è finito nel thinking (nessun blocco
             # di testo) o il JSON è troncato a metà. In entrambi i casi la
             # correzione è più margine, non un messaggio di correzione.
-            max_tokens = min(max_tokens * 2, 8192)
+            max_tokens = min(max_tokens * 2, MAX_TOKENS)
     raise ValueError(
         f"Impossibile ottenere JSON valido dopo {MAX_JSON_RETRIES + 1} tentativi"
     ) from ultimo_errore
 
 
-def parse_onboarding_answer(step: int, risposta_utente: str) -> dict:
-    user_prompt = prompts.build_onboarding_user_prompt(step, risposta_utente)
-    # Lo step 1 raccoglie allergie/intolleranze, gli altri le preferenze
-    # (stessa logica di handlers.handle_onboarding_answer).
-    schema = prompts.SCHEMA_ONBOARDING_ALLERGIE if step == 1 else prompts.SCHEMA_ONBOARDING_PREFERENZE
-    risultato = _call_json(prompts.SYSTEM_PROMPT_ONBOARDING_PARSING, user_prompt, schema)
-    logger.info("Onboarding step %d parsato: %s", step, risultato)
-    return risultato
+# ---------------------------------------------------------------------------
+# Loop agentico
+# ---------------------------------------------------------------------------
 
 
-def extract_menu_from_image(image_bytes: bytes, media_type: str = "image/jpeg") -> list[str]:
+def _blocchi_system(system: str) -> list[dict]:
+    """Il system prompt come singolo blocco cacheabile.
+
+    Il breakpoint copre anche le definizioni dei tool, che l'API rende prima
+    del system prompt: dentro il loop quel prefisso si ripete ad ogni giro.
+    """
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+
+
+def _testo_finale(response) -> str:
+    """Concatena tutti i blocchi di testo della risposta, scartando thinking e
+    tool_use. A differenza di _testo_risposta non solleva: a questo punto i tool
+    sono già stati eseguiti e il profilo va salvato comunque."""
+    pezzi = [blocco.text for blocco in response.content if blocco.type == "text"]
+    testo = "\n\n".join(pezzo.strip() for pezzo in pezzi if pezzo.strip())
+    if not testo:
+        logger.warning("Nessun blocco di testo nella risposta finale dell'agente")
+        return RISPOSTA_DI_RIPIEGO
+    return testo
+
+
+def _chiama_agente(system: str, messages: list, max_tokens: int, effort: str, tool_choice=None):
+    parametri = {
+        "model": MODEL,
+        "max_tokens": max_tokens,
+        "system": _blocchi_system(system),
+        "messages": messages,
+        "tools": agent_tools.TOOL_DEFINITIONS,
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": effort},
+    }
+    if tool_choice is not None:
+        parametri["tool_choice"] = tool_choice
+    return _get_client().messages.create(**parametri)
+
+
+def esegui_agente(
+    system: str,
+    blocchi_utente,
+    profile: dict,
+    max_tokens: int = 4096,
+    effort: str = "medium",
+) -> tuple[dict, str]:
+    """Esegue un turno di conversazione con i tool, applicandoli al profilo.
+
+    Restituisce (profilo_aggiornato, testo_da_inviare).
+    """
+    messages: list = [{"role": "user", "content": blocchi_utente}]
+    ritentato_per_troncamento = False
+
+    for _ in range(MAX_ITERAZIONI_AGENTE):
+        response = _chiama_agente(system, messages, max_tokens, effort)
+
+        if response.stop_reason == "max_tokens" and not ritentato_per_troncamento:
+            # Thinking, testo e input dei tool condividono il budget: se si è
+            # esaurito, la correzione è più margine, non un altro prompt.
+            ritentato_per_troncamento = True
+            max_tokens = min(max_tokens * 2, MAX_TOKENS)
+            logger.warning("Risposta troncata, ritento con max_tokens=%d", max_tokens)
+            continue
+
+        if response.stop_reason != "tool_use":
+            return profile, _testo_finale(response)
+
+        # response.content va rimandato indietro INTERO: con il thinking attivo
+        # i blocchi di ragionamento devono tornare intatti insieme ai tool_use,
+        # altrimenti il turno successivo viene rifiutato.
+        messages.append({"role": "assistant", "content": response.content})
+
+        risultati = []
+        for blocco in response.content:
+            if blocco.type != "tool_use":
+                continue
+            profile, testo, is_error = agent_tools.esegui_tool(blocco.name, blocco.input, profile)
+            logger.info("Tool %s -> is_error=%s: %s", blocco.name, is_error, testo)
+            risultati.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": blocco.id,
+                    "content": testo,
+                    "is_error": is_error,
+                }
+            )
+
+        # Tutti i risultati in UN solo messaggio: spezzarli insegnerebbe al
+        # modello a non chiamare più i tool in parallelo.
+        messages.append({"role": "user", "content": risultati})
+
+    # Iterazioni esaurite: un ultimo giro senza tool, così l'utente riceve
+    # comunque una risposta invece di restare a mani vuote col profilo già
+    # modificato.
+    logger.warning("Loop agente esaurito dopo %d iterazioni", MAX_ITERAZIONI_AGENTE)
+    response = _chiama_agente(system, messages, max_tokens, effort, tool_choice={"type": "none"})
+    return profile, _testo_finale(response)
+
+
+# ---------------------------------------------------------------------------
+# Chiamate one-shot
+# ---------------------------------------------------------------------------
+
+
+def descrivi_immagine(image_bytes: bytes, media_type: str = "image/jpeg") -> str:
+    """Converte una foto in testo per l'agente.
+
+    La conversione avviene una volta sola, fuori dal loop: l'API è stateless,
+    quindi un blocco immagine dentro il loop verrebbe ri-tokenizzato ad ogni
+    iterazione e ad ogni turno successivo che lo tenesse in cronologia.
+    """
     image_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
     content = [
         {
             "type": "image",
             "source": {"type": "base64", "media_type": media_type, "data": image_b64},
         },
-        {"type": "text", "text": prompts.build_menu_vision_user_text()},
+        {"type": "text", "text": prompts.build_testo_utente_immagine()},
     ]
     risultato = _call_json(
-        prompts.SYSTEM_PROMPT_MENU_VISION,
+        prompts.SYSTEM_PROMPT_IMMAGINE,
         content,
-        prompts.SCHEMA_MENU_VISION,
+        prompts.SCHEMA_IMMAGINE,
         max_tokens=4096,
         effort="medium",
     )
-    return risultato.get("opzioni_menu", [])
-
-
-def get_recommendation(
-    opzioni_menu: list[str],
-    allergie_intolleranze: list[str],
-    preferenze: list[dict],
-    pasti_recenti: list[dict],
-    riassunto_storico: str,
-) -> dict:
-    user_prompt = prompts.build_recommendation_user_prompt(
-        opzioni_menu, allergie_intolleranze, preferenze, pasti_recenti, riassunto_storico
+    logger.info("Foto letta: tipo=%s, %d opzioni", risultato.get("tipo"), len(risultato.get("opzioni_menu") or []))
+    return prompts.formatta_foto(
+        risultato.get("tipo", "altro"),
+        risultato.get("opzioni_menu") or [],
+        risultato.get("descrizione", ""),
     )
-    risultato = _call_json(
-        prompts.SYSTEM_PROMPT_RECOMMENDATION,
-        user_prompt,
-        prompts.SCHEMA_RECOMMENDATION,
-        effort="medium",
-    )
-    logger.info("Raccomandazione: %s", risultato)
-    return risultato
-
-
-def parse_feedback(pasto: dict, preferenze_attuali: list[dict], feedback_testo: str) -> dict:
-    user_prompt = prompts.build_feedback_user_prompt(pasto, preferenze_attuali, feedback_testo)
-    risultato = _call_json(
-        prompts.SYSTEM_PROMPT_FEEDBACK_PARSING, user_prompt, prompts.SCHEMA_FEEDBACK
-    )
-    logger.info("Feedback parsato per pasto %s: %s", pasto["id"], risultato)
-    return risultato
 
 
 def update_riassunto_storico(riassunto_attuale: str, pasto_da_archiviare: dict) -> str:

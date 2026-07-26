@@ -10,15 +10,23 @@ logger = logging.getLogger(__name__)
 
 MAX_PASTI_RECENTI = 20
 
+# Finestra di conversazione tenuta nel profilo: serve a risolvere i riferimenti
+# al turno precedente ("perfetta", "quella di ieri"), non a ricostruire la
+# storia completa. Il tetto sui caratteri evita che un singolo menu incollato
+# occupi da solo tutta la finestra.
+MAX_CRONOLOGIA = 20
+MAX_CARATTERI_TURNO = 500
+
+RUOLI_CRONOLOGIA = {"utente", "bot"}
+
 DEFAULT_PROFILE: dict = {
     "chat_id": None,
     "onboarding_completato": False,
-    "onboarding_step": 1,
     "allergie_intolleranze": [],
     "preferenze": [],
     "pasti_recenti": [],
     "riassunto_storico": "",
-    "in_attesa_di_feedback_per": None,
+    "cronologia": [],
     "in_attesa_di_conferma_reset": False,
     "ultimo_update_id": None,
 }
@@ -73,12 +81,33 @@ def normalizza_preferenza(pref) -> dict | None:
     }
 
 
+def normalizza_turno(turno) -> dict | None:
+    """Restituisce il turno di conversazione con le sole due chiavi previste, o
+    None se la voce è inutilizzabile."""
+    if not isinstance(turno, dict):
+        return None
+
+    ruolo = turno.get("ruolo")
+    if ruolo not in RUOLI_CRONOLOGIA:
+        return None
+
+    testo = turno.get("testo")
+    if not isinstance(testo, str) or not testo.strip():
+        return None
+
+    return {"ruolo": ruolo, "testo": testo[:MAX_CARATTERI_TURNO]}
+
+
 def normalizza_profilo(dati: dict) -> dict:
     """Fonde i dati letti dalla persistenza con DEFAULT_PROFILE (così un campo
     nuovo nello schema non rompe i profili esistenti) e ripulisce le preferenze."""
     profilo = {**copy.deepcopy(DEFAULT_PROFILE), **dati}
 
-    for campo in ("allergie_intolleranze", "pasti_recenti", "preferenze"):
+    # Whitelist: senza questa, un campo rimosso dallo schema resterebbe nel blob
+    # salvato per sempre, perché il merge qui sopra ricopia tutto ciò che trova.
+    profilo = {chiave: profilo[chiave] for chiave in DEFAULT_PROFILE}
+
+    for campo in ("allergie_intolleranze", "pasti_recenti", "preferenze", "cronologia"):
         if not isinstance(profilo[campo], list):
             logger.warning("Campo %r non è una lista, ripristino il default", campo)
             profilo[campo] = copy.deepcopy(DEFAULT_PROFILE[campo])
@@ -91,6 +120,17 @@ def normalizza_profilo(dati: dict) -> dict:
             continue
         preferenze.append(normalizzata)
     profilo["preferenze"] = preferenze
+
+    cronologia = []
+    for turno in profilo["cronologia"]:
+        normalizzato = normalizza_turno(turno)
+        if normalizzato is None:
+            logger.warning("Turno di cronologia scartato perché non recuperabile: %r", turno)
+            continue
+        cronologia.append(normalizzato)
+    # Il tetto va riapplicato in lettura e non solo in scrittura: un blob
+    # manomesso o scritto da una versione precedente gonfierebbe il prompt.
+    profilo["cronologia"] = cronologia[-MAX_CRONOLOGIA:]
 
     if not isinstance(profilo["riassunto_storico"], str):
         logger.warning("riassunto_storico non è una stringa, ripristino il default")
@@ -105,14 +145,9 @@ def normalizza_profilo(dati: dict) -> dict:
         logger.warning("ultimo_update_id non è un intero, ripristino il default")
         profilo["ultimo_update_id"] = DEFAULT_PROFILE["ultimo_update_id"]
 
-    onboarding_step = profilo["onboarding_step"]
-    if (
-        isinstance(onboarding_step, bool)
-        or not isinstance(onboarding_step, int)
-        or not 1 <= onboarding_step <= 4
-    ):
-        logger.warning("onboarding_step non valido (%r), ripristino il default", onboarding_step)
-        profilo["onboarding_step"] = DEFAULT_PROFILE["onboarding_step"]
+    if not isinstance(profilo["onboarding_completato"], bool):
+        logger.warning("onboarding_completato non è un booleano, ripristino il default")
+        profilo["onboarding_completato"] = DEFAULT_PROFILE["onboarding_completato"]
 
     chat_id = profilo["chat_id"]
     if chat_id is not None and (isinstance(chat_id, bool) or not isinstance(chat_id, int)):
@@ -146,11 +181,52 @@ def merge_preferenze(profile: dict, nuove_preferenze: list[dict]) -> dict:
     return profile
 
 
-def record_new_meal(profile: dict, opzioni_presentate: list[str], scelta_consigliata: str) -> dict:
+def aggiorna_allergie(profile: dict, voci: list[str], modo: str = "aggiungi") -> tuple[dict, list[str]]:
+    """Aggiunge o sostituisce le allergie/intolleranze. Restituisce il profilo
+    aggiornato e l'elenco finale, che il chiamante mostra all'utente: una
+    modifica silenziosa di un vincolo assoluto non è accettabile."""
     profile = copy.deepcopy(profile)
+
+    partenza = [] if modo == "sostituisci" else list(profile["allergie_intolleranze"])
+    finale: list[str] = []
+    viste: set[str] = set()
+    for voce in [*partenza, *voci]:
+        if not isinstance(voce, str):
+            logger.warning("Voce di allergia scartata perché non è una stringa: %r", voce)
+            continue
+        pulita = voce.strip()
+        if not pulita or pulita.casefold() in viste:
+            continue
+        viste.add(pulita.casefold())
+        finale.append(pulita)
+
+    profile["allergie_intolleranze"] = finale
+    return profile, finale
+
+
+def aggiungi_a_cronologia(profile: dict, ruolo: str, testo: str) -> dict:
+    """Appende un turno alla finestra di conversazione e la tronca. È l'unico
+    punto in cui la cronologia cresce, così il tetto ha un solo posto in cui
+    poter sbagliare."""
+    turno = normalizza_turno({"ruolo": ruolo, "testo": testo})
+    if turno is None:
+        return profile
+
+    profile = copy.deepcopy(profile)
+    profile["cronologia"] = [*profile["cronologia"], turno][-MAX_CRONOLOGIA:]
+    return profile
+
+
+def record_new_meal(
+    profile: dict, opzioni_presentate: list[str], scelta_consigliata: str
+) -> tuple[dict, str]:
+    """Registra il pasto e restituisce (profilo, id): l'id serve all'agente per
+    agganciarci il feedback nei turni successivi."""
+    profile = copy.deepcopy(profile)
+    pasto_id = uuid.uuid4().hex
     profile["pasti_recenti"].append(
         {
-            "id": uuid.uuid4().hex,
+            "id": pasto_id,
             "data": date.today().isoformat(),
             "opzioni_presentate": opzioni_presentate,
             "scelta_consigliata": scelta_consigliata,
@@ -159,14 +235,7 @@ def record_new_meal(profile: dict, opzioni_presentate: list[str], scelta_consigl
             "gradimento": None,
         }
     )
-    return profile
-
-
-def find_pasto_in_attesa_di_feedback(profile: dict) -> dict | None:
-    for pasto in reversed(profile["pasti_recenti"]):
-        if pasto["feedback"] is None:
-            return pasto
-    return None
+    return profile, pasto_id
 
 
 def apply_feedback(
