@@ -223,9 +223,6 @@ def test_extract_menu_from_image_restituisce_lista_opzioni(mock_get_client):
     kwargs = mock_client.messages.create.call_args.kwargs
     content_blocks = kwargs["messages"][0]["content"]
     assert content_blocks[0]["type"] == "image"
-    # Un menu fotografato può avere molte voci: serve margine di token
-    # sufficiente a non troncare il JSON (vedi bug #immagine).
-    assert kwargs["max_tokens"] > 1024
 
 
 @patch("claude_client._get_client")

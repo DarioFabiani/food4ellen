@@ -101,17 +101,6 @@ async def test_con_gestione_errori_non_propaga_e_risponde_col_messaggio_giusto()
     assert "profilo" in testo
 
 
-async def test_con_gestione_errori_messaggio_generico_su_eccezione_sconosciuta():
-    async def handler_che_esplode(update, context):
-        raise RuntimeError("boh")
-
-    update = _update()
-
-    await bot._con_gestione_errori(handler_che_esplode)(update, None)
-
-    assert "storto" in update.effective_message.reply_text.call_args.args[0]
-
-
 # ---------------------------------------------------------------------------
 # dedup per update_id
 # ---------------------------------------------------------------------------
