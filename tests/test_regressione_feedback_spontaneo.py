@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 import claude_client
 import handlers
 import storage
-from conftest import risposta, risposta_testo, blocco_tool_use
+from conftest import messaggio, risposta, risposta_testo, tool_call
 
 CONSIGLIO_DEL_BOT = (
     "Oggi ti consiglio la pizza ortolana con mozzarella, zucchine e melanzane: "
@@ -77,26 +77,28 @@ def test_l_agente_riceve_l_id_del_pasto_e_il_proprio_messaggio_precedente():
 
 def test_il_feedback_spontaneo_aggiorna_il_pasto_e_le_preferenze():
     """Il modello emette i due tool in parallelo: feedback + preferenza appresa."""
-    client = MagicMock()
-    client.messages.create.side_effect = [
+    completion = MagicMock()
+    completion.side_effect = [
         risposta(
-            blocco_tool_use(
-                "registra_feedback_pasto",
-                {
-                    "pasto_id": "pasto-ortolana",
-                    "gradimento": "positivo",
-                    "scelta_reale": None,
-                    "testo_feedback": MESSAGGIO_UTENTE,
-                },
-                "tu_1",
-            ),
-            blocco_tool_use("salva_preferenze", {"preferenze": [PREFERENZA_APPRESA]}, "tu_2"),
-            stop_reason="tool_use",
+            messaggio(tool_calls=[
+                tool_call(
+                    "registra_feedback_pasto",
+                    {
+                        "pasto_id": "pasto-ortolana",
+                        "gradimento": "positivo",
+                        "scelta_reale": None,
+                        "testo_feedback": MESSAGGIO_UTENTE,
+                    },
+                    "tu_1",
+                ),
+                tool_call("salva_preferenze", {"preferenze": [PREFERENZA_APPRESA]}, "tu_2"),
+            ]),
+            finish_reason="tool_calls",
         ),
         risposta_testo("Che bello, me lo segno!"),
     ]
 
-    with patch.object(claude_client, "_get_client", return_value=client):
+    with patch.object(claude_client, "_completion", completion):
         profilo, messaggi = handlers.processa_messaggio(
             _profilo_dello_screenshot(), MESSAGGIO_UTENTE
         )

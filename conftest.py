@@ -1,31 +1,46 @@
 """Helper condivisi per scriptare le risposte del modello nei test.
 
-Il loop agentico si testa sostituendo `claude_client._get_client` e passando a
-`messages.create` una sequenza di risposte finte: queste factory le costruiscono
-con la stessa forma degli oggetti dell'SDK (attributi, non chiavi).
+Il loop agentico si testa sostituendo `claude_client._completion` e passandogli
+una sequenza di risposte finte: queste factory le costruiscono con la stessa
+forma degli oggetti restituiti da LiteLLM (attributi, non chiavi) — un
+`ModelResponse` con `.choices[0].message` e `.choices[0].finish_reason`.
 """
+import json
 from types import SimpleNamespace
 
 
-def blocco_testo(testo: str) -> SimpleNamespace:
-    return SimpleNamespace(type="text", text=testo)
+def tool_call(nome: str, argomenti: dict, tool_id: str = "tu_1") -> SimpleNamespace:
+    return SimpleNamespace(
+        id=tool_id,
+        function=SimpleNamespace(name=nome, arguments=json.dumps(argomenti)),
+    )
 
 
-def blocco_thinking(pensiero: str = "sto ragionando") -> SimpleNamespace:
-    return SimpleNamespace(type="thinking", thinking=pensiero, signature="firma")
+def messaggio(
+    testo: str | None = None,
+    tool_calls: list | None = None,
+    reasoning_content: str | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(content=testo, tool_calls=tool_calls, reasoning_content=reasoning_content)
 
 
-def blocco_tool_use(nome: str, argomenti: dict, tool_id: str = "tu_1") -> SimpleNamespace:
-    return SimpleNamespace(type="tool_use", id=tool_id, name=nome, input=argomenti)
+def risposta(msg: SimpleNamespace, finish_reason: str = "stop") -> SimpleNamespace:
+    scelta = SimpleNamespace(message=msg, finish_reason=finish_reason)
+    return SimpleNamespace(choices=[scelta])
 
 
-def risposta(*blocchi, stop_reason: str = "end_turn") -> SimpleNamespace:
-    return SimpleNamespace(content=list(blocchi), stop_reason=stop_reason)
-
-
-def risposta_testo(testo: str) -> SimpleNamespace:
-    return risposta(blocco_testo(testo))
+def risposta_testo(testo: str, reasoning_content: str | None = None) -> SimpleNamespace:
+    return risposta(messaggio(testo, reasoning_content=reasoning_content))
 
 
 def risposta_tool_use(nome: str, argomenti: dict, tool_id: str = "tu_1") -> SimpleNamespace:
-    return risposta(blocco_tool_use(nome, argomenti, tool_id), stop_reason="tool_use")
+    return risposta(messaggio(tool_calls=[tool_call(nome, argomenti, tool_id)]), finish_reason="tool_calls")
+
+
+def risposta_troncata(reasoning_content: str = "sto ragionando") -> SimpleNamespace:
+    return risposta(messaggio(reasoning_content=reasoning_content), finish_reason="length")
+
+
+def risposta_vuota() -> SimpleNamespace:
+    """Nessun testo e nessun tool_call: caso limite per i test sui retry."""
+    return risposta(messaggio())

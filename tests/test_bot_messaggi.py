@@ -1,7 +1,7 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import anthropic
+import openai
 import requests
 
 import bot
@@ -57,10 +57,10 @@ async def test_rispondi_registra_chat_id_salva_e_invia_in_ordine(mock_save):
 # ---------------------------------------------------------------------------
 
 
-def test_diagnostica_errore_api_anthropic():
+def test_diagnostica_errore_api_llm():
     risposta = MagicMock()
     risposta.headers = {"request-id": "req_123"}
-    exc = anthropic.APIConnectionError(request=MagicMock())
+    exc = openai.APIConnectionError(request=MagicMock())
     exc.response = risposta
 
     messaggio, request_id = bot._diagnostica_errore(exc)

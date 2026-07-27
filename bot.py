@@ -9,7 +9,7 @@ import logging
 import os
 from typing import Awaitable, Callable
 
-import anthropic
+import openai
 import requests
 from dotenv import load_dotenv
 from telegram import Update
@@ -56,9 +56,9 @@ async def _profilo_per_update(update: Update) -> dict | None:
 async def _agente(update: Update, profile: dict, testo, immagine_bytes=None, media_type=None):
     """Esegue un turno di agente fuori dall'event loop.
 
-    Il client Anthropic è sincrono e il loop può fare più chiamate di fila: se
-    girasse qui bloccherebbe il polling di python-telegram-bot per decine di
-    secondi. Il "sta scrivendo…" copre l'attesa lato utente.
+    Il client LLM (via LiteLLM) è sincrono e il loop può fare più chiamate di
+    fila: se girasse qui bloccherebbe il polling di python-telegram-bot per
+    decine di secondi. Il "sta scrivendo…" copre l'attesa lato utente.
     """
     await update.effective_chat.send_action(ChatAction.TYPING)
     return await asyncio.to_thread(
@@ -79,7 +79,10 @@ async def _rispondi(update: Update, profile: dict, messaggi: list[str]) -> None:
 def _diagnostica_errore(exc: BaseException) -> tuple[str, str | None]:
     """Traduce un'eccezione nel messaggio da mostrare all'utente e, quando
     disponibile, nell'id di richiesta utile per il debug."""
-    if isinstance(exc, (anthropic.APIStatusError, anthropic.APIConnectionError)):
+    if isinstance(exc, openai.APIError):
+        # LiteLLM mappa gli errori di ogni provider in questa stessa gerarchia
+        # (in stile OpenAI): copre sia errori HTTP 4xx/5xx sia di connessione,
+        # indipendentemente dal provider configurato in LLM_MODEL.
         request_id = getattr(exc, "request_id", None)
         if request_id is None:
             risposta = getattr(exc, "response", None)

@@ -27,11 +27,40 @@ uv run python bot.py
 | Variabile | Descrizione |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Token del bot, ottenuto da @BotFather |
-| `ANTHROPIC_API_KEY` | Chiave API Anthropic |
-| `ANTHROPIC_MODEL` | Modello da usare (default `claude-sonnet-5`). Deve supportare **tool use** e **structured outputs**: `claude-sonnet-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-haiku-4-5`. Con modelli più vecchi le chiamate falliscono con un errore 400 |
+| `LLM_MODEL` | Modello da usare, con prefisso provider (default `openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`). Deve supportare **tool use** e **structured output** (`response_format` con `json_schema`) |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / ... | Chiave del provider scelto in `LLM_MODEL` — solo quella serve, le altre restano vuote |
 | `UPSTASH_REDIS_REST_URL` | URL REST del database Upstash Redis |
 | `UPSTASH_REDIS_REST_TOKEN` | Token REST del database Upstash Redis |
 | `ALLOWED_CHAT_ID` | (opzionale) chat_id a cui limitare il bot; se assente, il bot si "aggancia" al primo chat_id che gli scrive e lo salva nel profilo |
+
+## Provider e modelli
+
+Le chiamate al modello passano tutte da [LiteLLM](https://docs.litellm.ai/),
+che parla con qualunque provider (Anthropic, OpenAI, OpenRouter, modelli
+locali...) con un'unica interfaccia. Cambiare provider è solo una questione di
+`LLM_MODEL` + la chiave API giusta:
+
+```bash
+LLM_MODEL=openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free  # default — richiede OPENROUTER_API_KEY
+LLM_MODEL=anthropic/claude-sonnet-5      # richiede ANTHROPIC_API_KEY
+LLM_MODEL=openai/gpt-5.5                 # richiede OPENAI_API_KEY
+```
+
+Il default è stato scelto testando dal vivo (conversazione, tool-calling,
+structured output) diversi modelli free su OpenRouter: molti dichiarano
+supporto tool/schema nel catalogo ma non lo rispettano davvero (risposte con
+"tool call" scritte in prosa invece che tramite l'API, schema JSON ignorato).
+`nemotron-3-nano-omni-30b-a3b-reasoning:free` è il primo a passare tutti e tre
+i test — ma quei test coprivano solo testo: la combinazione **immagine +
+schema rigido insieme**, che è esattamente cosa fa `descrivi_immagine` per
+leggere le foto-menu (comprese le annotazioni sugli allergeni), non è mai
+stata verificata dal vivo con questo modello. Se in produzione la lettura
+delle foto risulta inaffidabile, il primo sospetto è lì.
+
+Un comportamento resta specializzato per Anthropic (in `claude_client.py`,
+dietro `_is_anthropic`): il **prompt caching** (`cache_control`) su system
+prompt e definizioni tool, che non ha un equivalente uniforme cross-provider —
+con un altro provider quei blocchi restano semplicemente inutilizzati.
 
 ## Persistenza
 
