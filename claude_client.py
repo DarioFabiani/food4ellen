@@ -29,6 +29,13 @@ import prompts
 
 logger = logging.getLogger(__name__)
 
+# Non ogni provider accetta ogni parametro che mandiamo (es. OpenRouter
+# rifiuta `reasoning_effort` su molti modelli free con un errore secco,
+# invece di ignorarlo): scartare quello che il provider attivo non supporta
+# è la scelta giusta per un parametro di sola ottimizzazione come questo,
+# piuttosto che far fallire il turno per una feature non essenziale.
+litellm.drop_params = True
+
 
 def _con_provider_di_default(model: str) -> str:
     """Un model id senza prefisso provider (uso storico) resta su Anthropic."""
