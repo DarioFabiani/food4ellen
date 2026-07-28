@@ -31,7 +31,7 @@ uv run python bot.py
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / ... | Chiave del provider scelto in `LLM_MODEL` — solo quella serve, le altre restano vuote |
 | `UPSTASH_REDIS_REST_URL` | URL REST del database Upstash Redis |
 | `UPSTASH_REDIS_REST_TOKEN` | Token REST del database Upstash Redis |
-| `ALLOWED_CHAT_IDS` | (opzionale) lista di `chat_id` ammessi a usare il bot, separati da virgola (es. `111111,222222`); se assente il bot risponde a chiunque scriva, ognuno con il proprio profilo — sconsigliato se più di una persona può trovare il bot |
+| `ALLOWED_CHAT_IDS` | (opzionale) lista di `chat_id` ammessi a usare il bot, separati da virgola (es. `111111,222222`); se assente il bot risponde a chiunque scriva, ognuno con il proprio profilo — sconsigliato se più di una persona può trovare il bot. Se impostata solo la vecchia `ALLOWED_CHAT_ID` (nome pre-refactor), viene comunque letta come fallback |
 
 Per sapere il proprio `chat_id`: scrivi al bot una volta (verrà ignorato se non sei ancora in lista) e controlla i log di Railway, che loggano il `chat_id` di ogni chat non autorizzata; oppure chiedilo a un bot terzo come @userinfobot su Telegram.
 

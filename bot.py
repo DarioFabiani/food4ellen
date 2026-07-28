@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 def _chat_autorizzata(chat_id: int) -> bool:
-    allowed_env = os.environ.get("ALLOWED_CHAT_IDS")
+    # Fallback sul nome della variabile pre-refactor: chi aveva ALLOWED_CHAT_ID
+    # impostata (mono-utente) non deve ritrovarsi il bot aperto a chiunque per
+    # una semplice rinomina di variabile mai propagata al deploy.
+    allowed_env = os.environ.get("ALLOWED_CHAT_IDS") or os.environ.get("ALLOWED_CHAT_ID")
     if not allowed_env:
         # Nessuna lista configurata: bot aperto a chiunque scriva (ogni chat
         # ottiene comunque un profilo isolato). Sconsigliato in produzione
