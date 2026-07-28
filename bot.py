@@ -17,7 +17,6 @@ from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 import handlers
-import profile_ops
 import storage
 
 load_dotenv()
@@ -26,13 +25,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 
-def _chat_consentita(profile: dict, chat_id: int) -> bool:
-    allowed_env = os.environ.get("ALLOWED_CHAT_ID")
-    if allowed_env:
-        return str(chat_id) == allowed_env
-    if profile["chat_id"] is None:
+def _chat_autorizzata(chat_id: int) -> bool:
+    # Fallback sul nome della variabile pre-refactor: chi aveva ALLOWED_CHAT_ID
+    # impostata (mono-utente) non deve ritrovarsi il bot aperto a chiunque per
+    # una semplice rinomina di variabile mai propagata al deploy.
+    allowed_env = os.environ.get("ALLOWED_CHAT_IDS") or os.environ.get("ALLOWED_CHAT_ID")
+    if not allowed_env:
+        # Nessuna lista configurata: bot aperto a chiunque scriva (ogni chat
+        # ottiene comunque un profilo isolato). Sconsigliato in produzione
+        # con più utenti: vedi README.
         return True
-    return profile["chat_id"] == chat_id
+    allowed_ids = {s.strip() for s in allowed_env.split(",") if s.strip()}
+    consentita = str(chat_id) in allowed_ids
+    if not consentita:
+        # Loggato per poter recuperare il chat_id da aggiungere ad
+        # ALLOWED_CHAT_IDS senza dover ricorrere a un bot terzo.
+        logger.info("Chat non autorizzata, chat_id=%s", chat_id)
+    return consentita
 
 
 def _update_gia_processato(profile: dict, update: Update) -> bool:
@@ -41,12 +50,14 @@ def _update_gia_processato(profile: dict, update: Update) -> bool:
 
 
 async def _profilo_per_update(update: Update) -> dict | None:
-    """Carica il profilo e applica i due filtri comuni a tutti gli handler:
-    chat autorizzata e update non già processato. None = non fare nulla."""
-    # storage usa requests (sincrono): fuori dall'event loop come tutto il resto.
-    profile = await asyncio.to_thread(storage.load_profile)
-    if not _chat_consentita(profile, update.effective_chat.id):
+    """Carica il profilo della chat e applica i due filtri comuni a tutti gli
+    handler: chat autorizzata e update non già processato. None = non fare
+    nulla."""
+    chat_id = update.effective_chat.id
+    if not _chat_autorizzata(chat_id):
         return None
+    # storage usa requests (sincrono): fuori dall'event loop come tutto il resto.
+    profile = await asyncio.to_thread(storage.load_profile, chat_id)
     if _update_gia_processato(profile, update):
         logger.info("Update %s già processato, ignoro", update.update_id)
         return None
@@ -67,11 +78,10 @@ async def _agente(update: Update, profile: dict, testo, immagine_bytes=None, med
 
 
 async def _rispondi(update: Update, profile: dict, messaggi: list[str]) -> None:
-    if profile["chat_id"] is None:
-        profile["chat_id"] = update.effective_chat.id
-        logger.info("chat_id registrato: %s", profile["chat_id"])
+    chat_id = update.effective_chat.id
+    profile["chat_id"] = chat_id
     profile["ultimo_update_id"] = update.update_id
-    await asyncio.to_thread(storage.save_profile, profile)
+    await asyncio.to_thread(storage.save_profile, chat_id, profile)
     for messaggio in messaggi:
         await update.effective_message.reply_text(messaggio)
 
@@ -155,21 +165,6 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 @_con_gestione_errori
-async def sblocca_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    profile = await _profilo_per_update(update)
-    if profile is None:
-        return
-    # Niente _rispondi: riassegnerebbe subito il chat_id appena liberato.
-    profile = profile_ops.sblocca_chat(profile)
-    profile["ultimo_update_id"] = update.update_id
-    await asyncio.to_thread(storage.save_profile, profile)
-    await update.effective_message.reply_text(
-        "Chat sbloccata: il prossimo che mi scrive verrà registrato come proprietario. "
-        "(Se hai impostato ALLOWED_CHAT_ID su Railway, quella variabile ha comunque la precedenza.)"
-    )
-
-
-@_con_gestione_errori
 async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     profile = await _profilo_per_update(update)
     if profile is None:
@@ -179,11 +174,10 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     payload = json.dumps(profile, ensure_ascii=False, indent=2).encode("utf-8")
     await update.effective_message.reply_document(
         document=io.BytesIO(payload), filename="profilo-mensa.json")
-    if profile["chat_id"] is None:
-        profile["chat_id"] = update.effective_chat.id
-        logger.info("chat_id registrato: %s", profile["chat_id"])
+    chat_id = update.effective_chat.id
+    profile["chat_id"] = chat_id
     profile["ultimo_update_id"] = update.update_id
-    await asyncio.to_thread(storage.save_profile, profile)
+    await asyncio.to_thread(storage.save_profile, chat_id, profile)
 
 
 @_con_gestione_errori
@@ -234,7 +228,6 @@ def main() -> None:
     app.add_handler(CommandHandler("feedback", feedback_command))
     app.add_handler(CommandHandler("preferenze", preferenze_command))
     app.add_handler(CommandHandler("reset", reset_command))
-    app.add_handler(CommandHandler("sbloccachat", sblocca_chat_command))
     app.add_handler(CommandHandler("export", export_command))
     app.add_handler(
         MessageHandler(

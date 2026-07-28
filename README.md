@@ -31,7 +31,15 @@ uv run python bot.py
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / ... | Chiave del provider scelto in `LLM_MODEL` — solo quella serve, le altre restano vuote |
 | `UPSTASH_REDIS_REST_URL` | URL REST del database Upstash Redis |
 | `UPSTASH_REDIS_REST_TOKEN` | Token REST del database Upstash Redis |
-| `ALLOWED_CHAT_ID` | (opzionale) chat_id a cui limitare il bot; se assente, il bot si "aggancia" al primo chat_id che gli scrive e lo salva nel profilo |
+| `ALLOWED_CHAT_IDS` | (opzionale) lista di `chat_id` ammessi a usare il bot, separati da virgola (es. `111111,222222`); se assente il bot risponde a chiunque scriva, ognuno con il proprio profilo — sconsigliato se più di una persona può trovare il bot. Se impostata solo la vecchia `ALLOWED_CHAT_ID` (nome pre-refactor), viene comunque letta come fallback |
+
+Per sapere il proprio `chat_id`: scrivi al bot una volta (verrà ignorato se non sei ancora in lista) e controlla i log di Railway, che loggano il `chat_id` di ogni chat non autorizzata; oppure chiedilo a un bot terzo come @userinfobot su Telegram.
+
+Il profilo (allergie, preferenze, storico) è isolato per persona, ma la
+chiave API del provider LLM è condivisa da tutto il bot: i limiti di
+richieste (in particolare quelli, più stretti, dei modelli gratuiti su
+OpenRouter) valgono per l'istanza intera, non per persona. Con più utenti
+attivi contemporaneamente quel tetto si esaurisce prima.
 
 ## Provider e modelli
 
@@ -66,31 +74,40 @@ con un altro provider quei blocchi restano semplicemente inutilizzati.
 
 Il profilo (preferenze, storico pasti, ecc.) non viene salvato su disco: il
 piano Railway usato (Trial) non supporta volumi persistenti, quindi verrebbe
-perso ad ogni redeploy/restart. Viene invece salvato come JSON in un'unica
-chiave su **Upstash Redis** (piano gratuito, persistente):
+perso ad ogni redeploy/restart. Viene invece salvato come JSON su **Upstash
+Redis** (piano gratuito, persistente), **una chiave per chat**
+(`mensa_bot:profile:<chat_id>`): ogni persona che scrive al bot ha il proprio
+profilo isolato, senza vedere allergie/preferenze/storico delle altre.
 
 1. Crea un database Redis gratuito su https://console.upstash.com
 2. Copia "REST URL" e "REST TOKEN" dalla dashboard del database
 3. Impostali come `UPSTASH_REDIS_REST_URL` e `UPSTASH_REDIS_REST_TOKEN`
 
 Se in futuro passi a un piano Railway con volumi persistenti, si può tornare
-a un file `profile.json` su disco modificando solo `storage.py` — il resto
-del bot non dipende dal meccanismo di persistenza.
+a file `profile.json` su disco modificando solo `storage.py` — il resto del
+bot non dipende dal meccanismo di persistenza.
+
+Il bot era originariamente mono-utente, con un unico profilo su una chiave
+fissa (`mensa_bot:profile`). Al primo avvio dopo l'aggiornamento, quel
+profilo viene migrato automaticamente sotto la chiave per-chat del suo
+proprietario (riconosciuto dal `chat_id` già salvato al suo interno) e la
+vecchia chiave viene eliminata: non serve nessuna azione manuale.
 
 ### Backup e ripristino
 
 Ad ogni salvataggio il profilo viene scritto anche su una **chiave di backup
-rotante** `mensa_bot:profile:backup:<giorno>`, dove `<giorno>` è il giorno
-della settimana (`0` = lunedì ... `6` = domenica). Si conservano quindi gli
-ultimi 7 giorni di storia, uno per giorno. Un fallimento della scrittura di
-backup viene solo loggato e non fa fallire il salvataggio principale.
+rotante per chat** `mensa_bot:profile:backup:<chat_id>:<giorno>`, dove
+`<giorno>` è il giorno della settimana (`0` = lunedì ... `6` = domenica). Si
+conservano quindi gli ultimi 7 giorni di storia per ogni persona, uno per
+giorno. Un fallimento della scrittura di backup viene solo loggato e non fa
+fallire il salvataggio principale.
 
 Per ripristinare da un backup, dalla console Upstash (scheda "Data Browser" o
 "CLI"):
 
 ```
-GET mensa_bot:profile:backup:2      # controlla il contenuto del giorno voluto
-SET mensa_bot:profile "<il JSON copiato dal comando sopra>"
+GET mensa_bot:profile:backup:<chat_id>:2      # controlla il contenuto del giorno voluto
+SET mensa_bot:profile:<chat_id> "<il JSON copiato dal comando sopra>"
 ```
 
 Il comando `/export` invia il profilo corrente come file JSON in chat: usalo
@@ -119,9 +136,6 @@ ottenere lo stesso risultato parlandogli normalmente.
 - `/preferenze` — riepilogo delle preferenze correnti (lettura locale, non passa dal modello)
 - `/reset` — azzera il profilo (richiede conferma esplicita scrivendo `CONFERMA`)
 - `/export` — invia il profilo completo come file JSON (backup manuale)
-- `/sbloccachat` — libera il `chat_id` registrato nel profilo: il prossimo che
-  scrive al bot viene registrato come proprietario. Se `ALLOWED_CHAT_ID` è
-  impostata, quella variabile ha comunque la precedenza
 
 ## Come mandare il menu
 

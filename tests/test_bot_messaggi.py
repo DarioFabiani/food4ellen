@@ -46,8 +46,9 @@ async def test_rispondi_registra_chat_id_salva_e_invia_in_ordine(mock_save):
 
     assert profilo["chat_id"] == 42
     assert profilo["ultimo_update_id"] == 7
-    # il profilo salvato deve già contenere l'update_id
-    salvato = mock_save.call_args[0][0]
+    # il profilo salvato deve già contenere l'update_id, sotto la chiave della chat giusta
+    chat_id_salvato, salvato = mock_save.call_args[0]
+    assert chat_id_salvato == 42
     assert salvato["ultimo_update_id"] == 7
     assert [c.args[0] for c in update.effective_message.reply_text.call_args_list] == ["primo", "secondo"]
 
@@ -155,7 +156,7 @@ async def test_messaggio_processa_un_update_nuovo(mock_load, mock_save, mock_han
     update.effective_message.reply_text.assert_called_once_with("ok")
 
 
-@patch.dict("os.environ", {"ALLOWED_CHAT_ID": "42"}, clear=True)
+@patch.dict("os.environ", {"ALLOWED_CHAT_IDS": "42"}, clear=True)
 @patch("bot.handlers.processa_messaggio")
 @patch("bot.storage.load_profile")
 async def test_messaggio_ignora_una_chat_non_consentita(mock_load, mock_handle):
@@ -233,7 +234,7 @@ async def test_non_gestito_risponde_se_la_chat_e_consentita(mock_load, mock_save
     assert "Non so gestire" in update.effective_message.reply_text.call_args.args[0]
 
 
-@patch.dict("os.environ", {"ALLOWED_CHAT_ID": "42"}, clear=True)
+@patch.dict("os.environ", {"ALLOWED_CHAT_IDS": "42"}, clear=True)
 @patch("bot.storage.save_profile")
 @patch("bot.storage.load_profile")
 async def test_non_gestito_tace_se_la_chat_non_e_consentita(mock_load, mock_save):
@@ -254,21 +255,6 @@ async def test_non_gestito_tace_se_la_chat_non_e_consentita(mock_load, mock_save
 @patch.dict("os.environ", {}, clear=True)
 @patch("bot.storage.save_profile")
 @patch("bot.storage.load_profile")
-async def test_sblocca_chat_command_azzera_il_chat_id_senza_riassegnarlo(mock_load, mock_save):
-    mock_load.return_value = _profilo_base(chat_id=42)
-    update = _update(update_id=8, chat_id=42)
-
-    await bot.sblocca_chat_command(update, None)
-
-    salvato = mock_save.call_args[0][0]
-    assert salvato["chat_id"] is None
-    assert salvato["ultimo_update_id"] == 8
-    assert "sbloccata" in update.effective_message.reply_text.call_args.args[0].lower()
-
-
-@patch.dict("os.environ", {}, clear=True)
-@patch("bot.storage.save_profile")
-@patch("bot.storage.load_profile")
 async def test_export_command_invia_il_profilo_come_documento(mock_load, mock_save):
     mock_load.return_value = _profilo_base(chat_id=42, allergie_intolleranze=["glutine"])
     update = _update(update_id=9, chat_id=42)
@@ -279,7 +265,9 @@ async def test_export_command_invia_il_profilo_come_documento(mock_load, mock_sa
     assert kwargs["filename"] == "profilo-mensa.json"
     contenuto = json.loads(kwargs["document"].getvalue().decode("utf-8"))
     assert contenuto["allergie_intolleranze"] == ["glutine"]
-    assert mock_save.call_args[0][0]["ultimo_update_id"] == 9
+    chat_id_salvato, salvato = mock_save.call_args[0]
+    assert chat_id_salvato == 42
+    assert salvato["ultimo_update_id"] == 9
 
 
 @patch.dict("os.environ", {}, clear=True)
@@ -291,7 +279,8 @@ async def test_export_command_rivendica_la_chat_come_rispondi(mock_load, mock_sa
 
     await bot.export_command(update, None)
 
-    salvato = mock_save.call_args[0][0]
+    chat_id_salvato, salvato = mock_save.call_args[0]
+    assert chat_id_salvato == 42
     assert salvato["chat_id"] == 42
     assert salvato["ultimo_update_id"] == 9
 
