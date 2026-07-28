@@ -17,8 +17,9 @@ import profile_ops
 
 logger = logging.getLogger(__name__)
 
-PROFILE_KEY = "mensa_bot:profile"
-PROFILE_BACKUP_KEY_FMT = "mensa_bot:profile:backup:{giorno}"
+LEGACY_PROFILE_KEY = "mensa_bot:profile"
+PROFILE_KEY_FMT = "mensa_bot:profile:{chat_id}"
+PROFILE_BACKUP_KEY_FMT = "mensa_bot:profile:backup:{chat_id}:{giorno}"
 
 # Re-export intenzionale: lo schema del profilo vive in profile_ops (che non
 # deve dipendere dalla persistenza), ma storage resta il punto di accesso
@@ -38,8 +39,39 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {os.environ['UPSTASH_REDIS_REST_TOKEN']}"}
 
 
-def load_profile() -> dict:
-    resp = requests.get(f"{_base_url()}/get/{PROFILE_KEY}", headers=_headers(), timeout=10)
+def _profile_key(chat_id: int) -> str:
+    return PROFILE_KEY_FMT.format(chat_id=chat_id)
+
+
+def _migra_profilo_legacy(chat_id: int) -> dict | None:
+    """Copia il profilo dalla vecchia chiave fissa (mono-utente, pre-refactor)
+    a quella per-chat, ma solo se appartiene a questo chat_id — altrimenti
+    resta un profilo altrui orfano sotto la chiave legacy. Chiamata solo
+    quando la chiave per-chat è ancora assente, quindi non pesa sul percorso
+    comune (profilo già migrato o mai esistito)."""
+    resp = requests.get(f"{_base_url()}/get/{LEGACY_PROFILE_KEY}", headers=_headers(), timeout=10)
+    resp.raise_for_status()
+    result = resp.json().get("result")
+    if result is None:
+        return None
+
+    try:
+        dati = json.loads(result)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(dati, dict) or dati.get("chat_id") != chat_id:
+        return None
+
+    profilo = profile_ops.normalizza_profilo(dati)
+    save_profile(chat_id, profilo)
+    resp = requests.post(f"{_base_url()}/del/{LEGACY_PROFILE_KEY}", headers=_headers(), timeout=10)
+    resp.raise_for_status()
+    logger.info("Profilo legacy migrato alla chiave per-chat (chat_id=%s)", chat_id)
+    return profilo
+
+
+def load_profile(chat_id: int) -> dict:
+    resp = requests.get(f"{_base_url()}/get/{_profile_key(chat_id)}", headers=_headers(), timeout=10)
     resp.raise_for_status()
     body = resp.json()
 
@@ -50,9 +82,12 @@ def load_profile() -> dict:
 
     result = body["result"]
     if result is None:
-        # Chiave assente: primo avvio, creiamo il profilo vuoto.
-        profilo = profile_ops.profilo_vuoto()
-        save_profile(profilo)
+        migrato = _migra_profilo_legacy(chat_id)
+        if migrato is not None:
+            return migrato
+        # Nessun profilo legacy da migrare: primo avvio per questa chat.
+        profilo = profile_ops.profilo_vuoto(chat_id)
+        save_profile(chat_id, profilo)
         return profilo
 
     dati = json.loads(result)
@@ -61,25 +96,25 @@ def load_profile() -> dict:
     return profile_ops.normalizza_profilo(dati)
 
 
-def _backup_key() -> str:
-    return PROFILE_BACKUP_KEY_FMT.format(giorno=datetime.date.today().weekday())
+def _backup_key(chat_id: int) -> str:
+    return PROFILE_BACKUP_KEY_FMT.format(chat_id=chat_id, giorno=datetime.date.today().weekday())
 
 
-def save_profile(profile: dict) -> None:
+def save_profile(chat_id: int, profile: dict) -> None:
     payload = json.dumps(profile)
     resp = requests.post(
-        f"{_base_url()}/set/{PROFILE_KEY}",
+        f"{_base_url()}/set/{_profile_key(chat_id)}",
         headers=_headers(),
         data=payload.encode("utf-8"),
         timeout=10,
     )
     resp.raise_for_status()
 
-    # Backup rotante su 7 chiavi (una per giorno della settimana): un suo
-    # fallimento non deve mai far fallire il salvataggio principale.
+    # Backup rotante su 7 chiavi per chat (una per giorno della settimana): un
+    # suo fallimento non deve mai far fallire il salvataggio principale.
     try:
         backup = requests.post(
-            f"{_base_url()}/set/{_backup_key()}",
+            f"{_base_url()}/set/{_backup_key(chat_id)}",
             headers=_headers(),
             data=payload.encode("utf-8"),
             timeout=10,

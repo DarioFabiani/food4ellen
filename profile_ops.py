@@ -40,12 +40,6 @@ def profilo_vuoto(chat_id=None) -> dict:
     return profilo
 
 
-def sblocca_chat(profile: dict) -> dict:
-    profile = copy.deepcopy(profile)
-    profile["chat_id"] = None
-    return profile
-
-
 def normalizza_preferenza(pref) -> dict | None:
     """Restituisce la preferenza con esattamente le 5 chiavi previste, o None se
     la voce è inutilizzabile (campo obbligatorio mancante o di tipo sbagliato)."""
@@ -151,8 +145,9 @@ def normalizza_profilo(dati: dict) -> dict:
 
     chat_id = profilo["chat_id"]
     if chat_id is not None and (isinstance(chat_id, bool) or not isinstance(chat_id, int)):
-        # Un chat_id non intero rende _chat_consentita sempre False: il bot
-        # smetterebbe di rispondere in silenzio.
+        # Un chat_id non intero romperebbe il confronto in
+        # storage._migra_profilo_legacy (che si aspetta un intero da
+        # confrontare con l'id della chat che sta scrivendo).
         logger.warning("chat_id non è un intero, ripristino il default")
         profilo["chat_id"] = DEFAULT_PROFILE["chat_id"]
 

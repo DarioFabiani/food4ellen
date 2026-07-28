@@ -33,15 +33,6 @@ def test_profilo_vuoto_non_condivide_le_liste_con_il_default():
     assert profile_ops.DEFAULT_PROFILE["preferenze"] == []
 
 
-def test_sblocca_chat_azzera_il_chat_id_senza_mutare_l_originale():
-    profilo = _profilo_base(chat_id=42)
-
-    risultato = profile_ops.sblocca_chat(profilo)
-
-    assert risultato["chat_id"] is None
-    assert profilo["chat_id"] == 42
-
-
 @pytest.mark.parametrize(
     "pref",
     [
